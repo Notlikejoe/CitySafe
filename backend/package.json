@@ -1,0 +1,11 @@
+{
+  "name": "citysafe-backend",
+  "version": "1.0.0",
+  "description": "CitySafe backend feature logic (in-memory mock)",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node index.js",
+    "start": "node index.js"
+  }
+}
