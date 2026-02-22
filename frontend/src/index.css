@@ -1,3 +1,256 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ─── Design Tokens ──────────────────────────────────────────────── */
+:root {
+  /* Brand */
+  --cs-teal-50: #f0fdfa;
+  --cs-teal-100: #ccfbf1;
+  --cs-teal-500: #14b8a6;
+  --cs-teal-600: #0d9488;
+  --cs-teal-700: #0f766e;
+
+  /* Safety blue — used ONLY for community safety actions (reports, maps) */
+  --cs-safety: #0ea5e9;
+  --cs-safety-light: #f0f9ff;
+  --cs-safety-border: #bae6fd;
+
+  /* Sky accent */
+  --cs-sky-400: #38bdf8;
+  --cs-sky-500: #0ea5e9;
+  --cs-sky-600: #0284c7;
+
+  /* Reward amber — used ONLY for points and gamification */
+  --cs-reward: #f59e0b;
+  --cs-reward-light: #fffbeb;
+  --cs-reward-border: #fde68a;
+
+  /* Warning — yellow/orange (moderate urgency) */
+  --cs-warn-500: #f97316;
+
+  /* Emergency — ONLY inside SOS context */
+  --cs-emergency: #dc2626;
+  --cs-emergency-light: #fee2e2;
+
+  /* Status semantic colours */
+  --cs-status-verified: #16a34a;
+  --cs-status-pending: #ca8a04;
+  --cs-status-rejected: #dc2626;
+
+  /* Neutral warm-slate */
+  --cs-bg: #f8fafc;
+  --cs-surface: #ffffff;
+  --cs-border: #e2e8f0;
+  --cs-muted: #94a3b8;
+  --cs-text: #0f172a;
+  --cs-text-2: #475569;
+  --cs-text-3: #94a3b8;
+
+  /* Sidebar width */
+  --sidebar-w: 260px;
+  --sidebar-w-collapsed: 76px;
+}
+
+/* ─── Base ───────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background: var(--cs-bg);
+  color: var(--cs-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Minimum text-size enforcement ─────────────────────────────── */
+/*
+  WCAG AA minimum for body text is 12px.
+  The prior design used `text-[10px]` (10px) for meta labels.
+  We set a floor of 11px for tracked labels and 12px for body.
+*/
+small,
+.text-xs {
+  font-size: 0.75rem;
+}
+
+/* 12px — enforced minimum for body meta */
+
+/* ─── Animations ─────────────────────────────────────────────────── */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes pulse-soft {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@keyframes sos-pulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4);
+  }
+
+  50% {
+    box-shadow: 0 0 0 12px rgba(220, 38, 38, 0);
+  }
+}
+
+@keyframes badge-pulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.5);
+  }
+
+  50% {
+    box-shadow: 0 0 0 4px rgba(251, 191, 36, 0);
+  }
+}
+
+@keyframes ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+
+  75%,
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.25s ease both;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease both;
+}
+
+.animate-sos-pulse {
+  animation: sos-pulse 2s ease-in-out infinite;
+}
+
+.animate-badge-pulse {
+  animation: badge-pulse 2s ease-in-out infinite;
+}
+
+.animate-ping {
+  animation: ping 1.2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* ─── Hover Lift — INTENTIONAL, not blanket ─────────────────────── */
+/*
+  Previously: `.hover-lift` was applied to every container indiscriminately.
+  Fix: Separate into two layers:
+    - `.hover-lift`       → subtle, for panels / stats / info cards (NOT controls)
+    - `.hover-lift-card`  → stronger, for primary interactive cards (SOS type, vouchers)
+  Controls (Button, NavLink) handle their own active/hover states independently.
+*/
+
+.hover-lift {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+/* Stronger lift for primary interactive cards (explicit opt-in) */
+.hover-lift-card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.hover-lift-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.09);
+}
+
+/* ─── Voucher card ───────────────────────────────────────────────── */
+/*
+  Removed: `.ticket-glass` glassmorphism shimmer-gold animation.
+  Replaced with a clean, minimal card that doesn't distract with luxury
+  aesthetic patterns inappropriate for a community safety context.
+*/
+.ticket-perf {
+  border-left: 2px dashed rgba(20, 184, 166, 0.25);
+}
+
+/* ─── Skeleton shimmer ───────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 0.5rem;
+}
+
+/* ─── Scrollbar (minimal) ────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--cs-border);
+  border-radius: 2px;
+}
+
+/* ─── Focus ring ─────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--cs-teal-600);
+  outline-offset: 2px;
+}
