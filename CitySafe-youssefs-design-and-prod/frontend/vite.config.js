@@ -4,6 +4,10 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
+  server: {
+    port: 8888,
+    strictPort: true,
+  },
   plugins: [
     react(),
     VitePWA({
@@ -27,7 +31,7 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         runtimeCaching: [
           {
-            urlPattern: /^http:\/\/localhost:4000\/api\/.*/,
+            urlPattern: /^http:\/\/localhost:4005\/api\/.*/,
             handler: 'NetworkFirst',
             options: {
               cacheName: 'citysafe-api-cache',

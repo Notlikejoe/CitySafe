@@ -4,6 +4,7 @@
 
 import { randomUUID } from "crypto";
 import { readFileSync, writeFileSync, existsSync, renameSync } from "fs";
+export { readFileSync, writeFileSync, existsSync, renameSync };
 
 // ─── ID Generation ────────────────────────────────────────────────────────────
 export const generateId = () => randomUUID();
@@ -207,4 +208,3 @@ export const log = (level, event, meta = {}) => {
 };
 
 // ─── File Helpers (used by store persistence) — Fix #7 ───────────────────────
-export { readFileSync, writeFileSync, existsSync };
