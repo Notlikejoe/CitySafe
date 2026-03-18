@@ -14,10 +14,9 @@ import { ListSkeleton } from "../components/ui/Skeleton";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ErrorBanner } from "../components/ui/ErrorBanner";
 import { useSocket } from "../hooks/useSocket";
+import { useAuth } from "../contexts/AuthContext";
 import toast from "react-hot-toast";
 
-const MOCK_USER_ID = "user_demo";
-const MOCK_USER_NAME = "Mounir";
 
 const FILTER_TABS = [
   { id: "", label: "All" },
@@ -223,14 +222,17 @@ function TimelineEvent({ event, idx, isLast, onNavigate }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const greeting = useGreeting(MOCK_USER_NAME);
+  const { user } = useAuth();
+  const userId = user?.userId ?? "";
+  const displayName = user?.displayName ?? user?.userId ?? "there";
+  const greeting = useGreeting(displayName);
   const [filter, setFilter] = useState("");
   const [page, setPage] = useState(1);
 
   const { data: history, isLoading, isError, error, refetch } =
-    useHistory(MOCK_USER_ID, { type: filter || undefined, page, limit: 20 });
-  const { data: points } = usePoints(MOCK_USER_ID);
-  const { data: vouchers = [] } = useVouchers(MOCK_USER_ID);
+    useHistory(userId, { type: filter || undefined, page, limit: 20 });
+  const { data: points } = usePoints(userId);
+  const { data: vouchers = [] } = useVouchers(userId);
   const { mutate: redeem, isPending: redeeming } = useRedeemVoucher();
   const { on, off } = useSocket();
   const queryClient = useQueryClient();
@@ -239,7 +241,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const handleSosNew = (data) => {
       queryClient.invalidateQueries({ queryKey: ["history"] });
-      if (data?.userId !== MOCK_USER_ID) {
+      if (data?.userId !== userId) {
         toast("🚨 New SOS nearby!", { duration: 4000 });
       }
     };
@@ -265,7 +267,7 @@ export default function DashboardPage() {
       {/* ── A. Greeting ─────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-3 animate-fade-up">
         <div className="h-11 w-11 rounded-2xl bg-gradient-to-br from-teal-400 to-teal-600 flex items-center justify-center text-white font-extrabold text-lg shadow-md shadow-teal-500/20 shrink-0">
-          {MOCK_USER_NAME[0]}
+          {displayName[0]?.toUpperCase() ?? "U"}
         </div>
         <div>
           {/* Warm, human greeting */}

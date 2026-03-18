@@ -1,9 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import client from "../lib/apiClient";
 
-const MOCK_USER_ID = "user_demo";
 
-export const useSettings = (userId = MOCK_USER_ID) => {
+
+export const useSettings = (userId = "") => {
     const queryClient = useQueryClient();
 
     const query = useQuery({

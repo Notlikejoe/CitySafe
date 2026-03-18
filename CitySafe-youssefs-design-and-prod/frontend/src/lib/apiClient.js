@@ -7,7 +7,7 @@ import { mockRequest } from "./mockAdapter";
 import toast from "react-hot-toast";
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api";
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4005/api";
 
 // ─── Real axios instance ──────────────────────────────────────────────
 const axiosInstance = axios.create({
@@ -38,8 +38,8 @@ axiosInstance.interceptors.response.use(
                 localStorage.removeItem("cs_token");
                 toast.error("Session expired. Please log in again.");
                 setTimeout(() => {
-                    if (window.location.pathname !== "/login") {
-                        window.location.href = "/login";
+                    if (window.location.pathname !== "/auth") {
+                        window.location.href = "/auth";
                     }
                 }, 1500);
             }
