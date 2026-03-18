@@ -77,10 +77,19 @@ export default function Sidebar({ mobile = false, collapsed = false, onToggleCol
 
         {!collapsed && (
           <div className="mt-3">
-            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-400">
-              <Search className="h-3.5 w-3.5" />
-              <span>Search area…</span>
-            </div>
+            <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-400 cursor-text focus-within:border-teal-400 focus-within:bg-white focus-within:ring-2 focus-within:ring-teal-100 transition-all">
+              <Search className="h-3.5 w-3.5 shrink-0" />
+              <input
+                type="text"
+                placeholder="Search area…"
+                className="bg-transparent outline-none w-full text-slate-700 placeholder-slate-400 text-sm"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && e.target.value.trim()) {
+                    toast("🗺️ Map search coming soon!", { duration: 2500 });
+                  }
+                }}
+              />
+            </label>
           </div>
         )}
       </div>

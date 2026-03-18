@@ -1,10 +1,10 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   FileWarning, Siren, Ticket, ChevronRight,
   Clock, Shield, BadgeCheck, TrendingUp, Star,
-  AlertCircle,
+  AlertCircle, X, MapPin, Calendar, Tag,
 } from "lucide-react";
 import { useHistory } from "../hooks/useHistory";
 import { usePoints } from "../hooks/usePoints";
@@ -70,6 +70,106 @@ function useGreeting(name) {
     if (h < 18) return `Hey ${name} 👋`;
     return `Good evening, ${name} 👋`;
   }, [name]);
+}
+
+// ─── Event Detail Modal ────────────────────────────────────────────────────────
+function EventDetailModal({ event, onClose }) {
+  useEffect(() => {
+    const handler = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  if (!event) return null;
+
+  const meta = TYPE_META[event._type] ?? TYPE_META.report;
+  const label = meta.label(event);
+  const statusClass = STATUS_BADGE[event.status] ?? "bg-slate-100 border-slate-200 text-slate-500";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+    >
+      <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl animate-fade-up overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-slate-100">
+          <div className="flex items-center gap-2.5">
+            <div className={`h-2.5 w-2.5 rounded-full ${meta.dot}`} />
+            <div className="font-bold text-slate-900 text-sm">{label}</div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4 space-y-4">
+          {/* Status badge */}
+          {event.status && (
+            <div className="flex items-center gap-2">
+              <Tag className="h-3.5 w-3.5 text-slate-400" />
+              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border capitalize ${statusClass}`}>
+                {event.status.replace(/_/g, " ")}
+              </span>
+            </div>
+          )}
+
+          {/* Description */}
+          {event.description && (
+            <div className="rounded-2xl bg-slate-50 border border-slate-100 px-4 py-3">
+              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Description</div>
+              <div className="text-sm text-slate-700 leading-relaxed">{event.description}</div>
+            </div>
+          )}
+
+          {/* Coordinates */}
+          {event.location?.lat && (
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <MapPin className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+              <span className="font-mono text-xs">
+                {event.location.lat.toFixed(5)}, {event.location.lon?.toFixed(5) ?? event.location.lng?.toFixed(5)}
+              </span>
+            </div>
+          )}
+
+          {/* Timestamp */}
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            <Calendar className="h-3.5 w-3.5 shrink-0" />
+            <span>{new Date(event._timestamp ?? event.createdAt).toLocaleString([], {
+              weekday: "short", month: "short", day: "numeric",
+              hour: "2-digit", minute: "2-digit",
+            })}</span>
+          </div>
+
+          {/* Points row if applicable */}
+          {event._type === "point" && (
+            <div className="flex items-center gap-2 text-sm font-bold text-amber-600">
+              <Star className="h-4 w-4" />
+              +{event.points} CityPoints earned
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 pb-5">
+          <button
+            onClick={onClose}
+            className="w-full rounded-2xl bg-slate-900 text-white text-sm font-bold py-3 hover:bg-slate-700 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─── Points Summary Card ──────────────────────────────────────────────────────
@@ -155,7 +255,7 @@ function VoucherCard({ voucher, onRedeem, redeeming }) {
 }
 
 // ─── Timeline Event ───────────────────────────────────────────────────────────
-function TimelineEvent({ event, idx, isLast, onNavigate }) {
+function TimelineEvent({ event, idx, isLast, onSelect }) {
   const meta = TYPE_META[event._type] ?? TYPE_META.report;
   const label = meta.label(event);
   const statusClass = STATUS_BADGE[event.status] ?? "bg-slate-100 border-slate-200 text-slate-500";
@@ -172,10 +272,10 @@ function TimelineEvent({ event, idx, isLast, onNavigate }) {
         isClickable ? "cursor-pointer hover:bg-slate-50 active:bg-slate-100" : "",
       ].join(" ")}
       style={{ animationDelay: `${idx * 35}ms` }}
-      onClick={isClickable && onNavigate ? onNavigate : undefined}
+      onClick={isClickable ? () => onSelect(event) : undefined}
       role={isClickable ? "button" : undefined}
       tabIndex={isClickable ? 0 : undefined}
-      onKeyDown={isClickable && onNavigate ? (e) => e.key === "Enter" && onNavigate() : undefined}
+      onKeyDown={isClickable ? (e) => e.key === "Enter" && onSelect(event) : undefined}
       aria-label={isClickable ? `View details for ${label}` : undefined}
     >
       {/* Left rail */}
@@ -228,6 +328,8 @@ export default function DashboardPage() {
   const greeting = useGreeting(displayName);
   const [filter, setFilter] = useState("");
   const [page, setPage] = useState(1);
+  const [selectedEvent, setSelectedEvent] = useState(null);
+  const handleCloseModal = useCallback(() => setSelectedEvent(null), []);
 
   const { data: history, isLoading, isError, error, refetch } =
     useHistory(userId, { type: filter || undefined, page, limit: 20 });
@@ -262,7 +364,7 @@ export default function DashboardPage() {
   const activeVouchers = vouchers.filter((v) => !v.redeemed && new Date(v.expiresAt) > new Date());
 
   return (
-    <div className="max-w-2xl mx-auto py-6 px-4 space-y-6">
+    <>
 
       {/* ── A. Greeting ─────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-3 animate-fade-up">
@@ -380,11 +482,7 @@ export default function DashboardPage() {
                 event={event}
                 idx={i}
                 isLast={i === history.items.length - 1}
-                onNavigate={
-                  event._type === "report" ? () => navigate("/dashboard") :
-                    event._type === "sos" ? () => navigate("/dashboard") :
-                      null
-                }
+                onSelect={setSelectedEvent}
               />
             ))}
           </div>
@@ -423,5 +521,8 @@ export default function DashboardPage() {
         </div>
       </div>
     </div>
-  );
+
+    {/* Event detail modal */}
+    <EventDetailModal event={selectedEvent} onClose={handleCloseModal} />
+  </>);
 }
