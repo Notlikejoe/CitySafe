@@ -1,8 +1,10 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import {
   Map, FileWarning, Siren, LayoutDashboard,
-  Settings, PanelLeftClose, PanelLeftOpen, Search,
+  Settings, PanelLeftClose, PanelLeftOpen, Search, LogOut,
 } from "lucide-react";
+import { useAuth } from "../contexts/AuthContext";
+import toast from "react-hot-toast";
 
 const navItems = [
   { to: "/", label: "Map", Icon: Map, end: true, desc: "Safety map" },
@@ -13,6 +15,15 @@ const navItems = [
 ];
 
 export default function Sidebar({ mobile = false, collapsed = false, onToggleCollapsed }) {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    toast.success("You have been signed out.");
+    navigate("/auth");
+  };
+
   if (mobile) {
     return (
       <nav className="px-2 py-2 pb-safe">
@@ -76,7 +87,7 @@ export default function Sidebar({ mobile = false, collapsed = false, onToggleCol
 
       {/* Nav */}
       <nav className={collapsed ? "p-2 flex flex-col gap-1" : "p-3 flex flex-col gap-1"}>
-        {navItems.map(({ to, label, Icon, end, desc }) => (
+        {navItems.map(({ to, label, Icon, end }) => (
           <NavLink
             key={to} to={to} end={end}
             title={collapsed ? label : undefined}
@@ -95,18 +106,51 @@ export default function Sidebar({ mobile = false, collapsed = false, onToggleCol
       </nav>
 
       {/* Footer */}
-      {!collapsed ? (
-        <div className="mt-auto p-3 border-t border-slate-100">
-          <div className="rounded-2xl border border-teal-100 bg-teal-50 p-3">
-            <div className="text-xs font-bold text-teal-700">🌟 You're making a difference</div>
-            <div className="text-xs text-teal-600 mt-1">
-              Every report helps keep your community safer. Thank you!
+      <div className="mt-auto border-t border-slate-100">
+        {/* User info + logout */}
+        {!collapsed ? (
+          <div className="p-3 space-y-2">
+            {/* User badge */}
+            <div className="flex items-center gap-3 px-2 py-2">
+              <div className="h-8 w-8 rounded-xl bg-teal-100 flex items-center justify-center text-sm font-bold text-teal-700 shrink-0">
+                {user?.userId?.[0]?.toUpperCase() ?? "U"}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-semibold text-slate-700 truncate">{user?.userId ?? "User"}</div>
+                <div className="text-[10px] text-slate-400 capitalize">{user?.role ?? "member"}</div>
+              </div>
+            </div>
+
+            {/* Logout button */}
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm font-semibold text-red-500 hover:bg-red-50 rounded-2xl transition-all"
+            >
+              <LogOut className="h-4 w-4 shrink-0" />
+              <span>Sign Out</span>
+            </button>
+
+            {/* CTA */}
+            <div className="rounded-2xl border border-teal-100 bg-teal-50 p-3">
+              <div className="text-xs font-bold text-teal-700">🌟 You're making a difference</div>
+              <div className="text-xs text-teal-600 mt-1">
+                Every report helps keep your community safer. Thank you!
+              </div>
             </div>
           </div>
-        </div>
-      ) : (
-        <div className="mt-auto p-2 border-t border-slate-100 text-[11px] text-slate-300 text-center">v1</div>
-      )}
+        ) : (
+          <div className="p-2 space-y-1">
+            <button
+              onClick={handleLogout}
+              title="Sign Out"
+              className="w-full flex items-center justify-center p-2.5 text-red-500 hover:bg-red-50 rounded-2xl transition-all"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+            <div className="text-[11px] text-slate-300 text-center">v2</div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

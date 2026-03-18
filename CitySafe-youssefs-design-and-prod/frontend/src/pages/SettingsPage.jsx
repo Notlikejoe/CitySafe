@@ -1,8 +1,11 @@
-import { Bell, Moon, Shield, ChevronRight, ExternalLink, Loader2 } from "lucide-react";
+import { Bell, Moon, Shield, ChevronRight, ExternalLink, Loader2, LogOut } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { useSettings } from "../hooks/useSettings";
+import { useAuth } from "../contexts/AuthContext";
+import { useNavigate } from "react-router-dom";
+import toast from "react-hot-toast";
 
-const MOCK_USER_ID = "user_demo";
+
 
 // ─── Setting definitions (keys must match the API settings object) ─────────────
 const SETTING_GROUPS = [
@@ -50,7 +53,15 @@ function Toggle({ enabled, onChange, disabled }) {
 }
 
 export default function SettingsPage() {
-  const { settings, isLoading, updateSetting } = useSettings(MOCK_USER_ID);
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const { settings, isLoading, updateSetting } = useSettings(user?.userId ?? "");
+
+  const handleLogout = () => {
+    logout();
+    toast.success("You have been signed out.");
+    navigate("/auth");
+  };
 
   return (
     <div className="max-w-xl mx-auto py-6 px-4 space-y-6">
@@ -62,11 +73,11 @@ export default function SettingsPage() {
       {/* Profile card */}
       <Card className="p-4 flex items-center gap-4">
         <div className="h-12 w-12 rounded-2xl bg-teal-100 flex items-center justify-center text-2xl font-bold text-teal-700 shrink-0">
-          Y
+          {user?.userId?.[0]?.toUpperCase() ?? "U"}
         </div>
         <div className="flex-1 min-w-0">
-          <div className="font-semibold text-slate-800">Demo User</div>
-          <div className="text-sm text-slate-400">user_demo · Member since Feb 2026</div>
+          <div className="font-semibold text-slate-800">{user?.userId ?? "User"}</div>
+          <div className="text-sm text-slate-400 capitalize">{user?.role ?? "member"}</div>
         </div>
         <ChevronRight className="h-4 w-4 text-slate-300" />
       </Card>
@@ -126,6 +137,14 @@ export default function SettingsPage() {
           <ExternalLink className="h-3.5 w-3.5" /> View on GitHub
         </a>
       </Card>
+      {/* Logout */}
+      <button
+        onClick={handleLogout}
+        className="w-full flex items-center justify-center gap-2 py-3 text-sm font-semibold text-red-500 hover:bg-red-50 border border-red-100 rounded-2xl transition-all"
+      >
+        <LogOut className="h-4 w-4" />
+        Sign Out
+      </button>
     </div>
   );
 }
