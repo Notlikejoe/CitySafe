@@ -8,7 +8,7 @@
  * #7 — schedulePersist() called after every mutation.
  */
 
-import { store, SOS_STATUS, SOS_TRANSITIONS, SOS_TYPE, SOS_URGENCY, SOS_THROTTLE_CONFIG, bumpVersion, schedulePersist } from "../store.js";
+import { store, insertUserEntity, SOS_STATUS, SOS_TRANSITIONS, SOS_TYPE, SOS_URGENCY, SOS_THROTTLE_CONFIG, bumpVersion, schedulePersist } from "../store.js";
 import { generateId, getTimestamp, isValidLocation, isValidEnum, minutesBetween, sanitize, validateFields, tryCatch, ok, err, log } from "../utils.js";
 import { awardPoints } from "./points.js";
 
@@ -78,6 +78,7 @@ export const createSos = (params) => tryCatch(() => {
     };
 
     store.sosRequests.push(sos);
+    insertUserEntity(sos.userId, "sos", sos);
     schedulePersist();  // #7
     log("info", "sos.created", { sosId: sos.id, userId, type, urgency, location });
     return ok(sos);

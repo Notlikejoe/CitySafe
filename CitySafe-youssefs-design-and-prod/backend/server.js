@@ -19,22 +19,24 @@ import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import crypto from "crypto";
 
 dotenv.config();
 
 // ─── Domain imports ─────────────────────────────────────────────────────────
-import { createReport, transitionReportStatus, getNearbyReports, getReportsByUser, adminVerifyReport, adminRejectReport } from "./features/reports.js";
+import { createReport, transitionReportStatus, getNearbyReports, getReportsByUser, adminVerifyReport, adminRejectReport, cancelReport } from "./features/reports.js";
 import { createAlert, getNearbyAlerts, getAlertsFeed, deactivateAlert, expireAlerts } from "./features/alerts.js";
 import { createSos, transitionSosStatus, getUserSosHistory } from "./features/sos.js";
 import { getUserBalance, getUserPointsLedger, awardPoints } from "./features/points.js";
 import { redeemVoucher, getUserVouchers } from "./features/vouchers.js";
 import { getUserHistory } from "./features/history.js";
-import { store, loadStore } from "./store.js";
+import { store, loadStore, schedulePersist } from "./store.js";
 import { log } from "./utils.js";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
-const JWT_SECRET = process.env.JWT_SECRET || "citysafe-dev-secret-change-in-prod";
+if (!process.env.JWT_SECRET) throw new Error("CRITICAL: JWT_SECRET environment variable is missing.");
+const JWT_SECRET = process.env.JWT_SECRET;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ─── App Setup ────────────────────────────────────────────────────────────────
@@ -51,12 +53,21 @@ app.set("io", io);
 const uploadDir = path.join(__dirname, "uploads");
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
+    filename: (req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase();
+        cb(null, `${Date.now()}-${crypto.randomUUID()}${ext}`);
+    },
 });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5 MB cap
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors());
+
+// Content Security Policy
+app.use((req, res, next) => {
+    res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; form-action 'self'; frame-ancestors 'none';");
+    next();
+});
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(uploadDir));
@@ -125,20 +136,7 @@ const requireAdmin = (req, res, next) => {
     next();
 };
 
-// ─── In-memory "user credentials" (demo — replace with DB in prod) ────────────
-/** userId → { passwordHash, role } */
-const credentials = new Map();
-/** Pre-seed a demo user and admin so reviewers can log straight in */
-credentials.set("user_demo", {
-    passwordHash: bcrypt.hashSync("demo1234", 10),
-    role: "user",
-    displayName: "Demo User",
-});
-credentials.set("admin_01", {
-    passwordHash: bcrypt.hashSync("admin1234", 10),
-    role: "admin",
-    displayName: "Admin",
-});
+// ─── User seeding (moved to store initialization below) ────────────
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const send = (res, result, statusOnError = 400) => {
@@ -155,11 +153,15 @@ const created = (res, result) => {
 app.post("/api/auth/register", authLimiter, async (req, res) => {
     const { userId, password, displayName } = req.body;
     if (!userId || !password) return res.status(400).json({ error: "userId and password required." });
-    if (credentials.has(userId)) return res.status(409).json({ error: "User already exists." });
+    if (store.users[userId]) return res.status(409).json({ error: "User already exists." });
     if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters." });
+    if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+        return res.status(400).json({ error: "Password must contain at least one letter and one number." });
+    }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    credentials.set(userId, { passwordHash, role: "user", displayName: displayName ?? userId });
+    store.users[userId] = { passwordHash, role: "user", displayName: displayName ?? userId };
+    schedulePersist();
 
     const token = jwt.sign({ userId, role: "user" }, JWT_SECRET, { expiresIn: "24h" });
     log("info", "auth.register", { userId });
@@ -170,7 +172,7 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
     const { userId, password } = req.body;
     if (!userId || !password) return res.status(400).json({ error: "userId and password required." });
 
-    const user = credentials.get(userId);
+    const user = store.users[userId];
     if (!user) return res.status(401).json({ error: "Invalid credentials." });
 
     const valid = await bcrypt.compare(password, user.passwordHash);
@@ -182,7 +184,7 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
 });
 
 app.get("/api/auth/me", requireAuth, (req, res) => {
-    const user = credentials.get(req.user.userId);
+    const user = store.users[req.user.userId];
     if (!user) return res.status(404).json({ error: "User not found." });
     return res.json({ userId: req.user.userId, role: req.user.role, displayName: user.displayName });
 });
@@ -241,6 +243,11 @@ app.post("/api/reports/:id/verify", requireAuth, requireAdmin, (req, res) => {
 
 app.post("/api/reports/:id/reject", requireAuth, requireAdmin, (req, res) => {
     const result = adminRejectReport(req.params.id, req.user.userId);
+    return send(res, result);
+});
+
+app.delete("/api/reports/:id/cancel", requireAuth, (req, res) => {
+    const result = cancelReport(req.params.id, req.user.userId);
     return send(res, result);
 });
 
@@ -366,18 +373,16 @@ app.get("/api/users/:id/history", requireAuth, requireOwnerOrAdmin((req) => req.
 });
 
 // ─── User Settings ────────────────────────────────────────────────────────────
-/** In-memory user settings (persists as long as server is up) */
-const userSettings = new Map();
-
 app.get("/api/users/:id/settings", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const settings = userSettings.get(req.params.id) ?? { anonymousReports: false, notifications: true };
+    const settings = store.userSettings[req.params.id] ?? { anonymousReports: false, notifications: true };
     return res.json(settings);
 });
 
 app.patch("/api/users/:id/settings", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const current = userSettings.get(req.params.id) ?? { anonymousReports: false, notifications: true };
+    const current = store.userSettings[req.params.id] ?? { anonymousReports: false, notifications: true };
     const updated = { ...current, ...req.body };
-    userSettings.set(req.params.id, updated);
+    store.userSettings[req.params.id] = updated;
+    schedulePersist();
     log("info", "user.settings_updated", { userId: req.params.id, settings: updated });
     return res.json(updated);
 });
@@ -421,6 +426,22 @@ setInterval(() => expireAlerts(), 5 * 60 * 1000); // every 5 min
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 loadStore();
+
+// Seed default users if store is empty
+if (Object.keys(store.users).length === 0) {
+    store.users["user_demo"] = {
+        passwordHash: bcrypt.hashSync("demo1234", 10),
+        role: "user",
+        displayName: "Demo User",
+    };
+    store.users["admin_01"] = {
+        passwordHash: bcrypt.hashSync("admin1234", 10),
+        role: "admin",
+        displayName: "Admin",
+    };
+    schedulePersist();
+}
+
 httpServer.listen(PORT, () => {
     log("info", "server.started", { port: PORT, mode: process.env.NODE_ENV ?? "development" });
     console.log(`\n🚀  CitySafe API running → http://localhost:${PORT}\n`);

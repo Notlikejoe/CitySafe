@@ -39,15 +39,22 @@ export function useSocket() {
         refCount++;
         socketRef.current = getSocket();
 
-        socketRef.current.on("connect", () => {
+        const onConnect = () => {
             console.log("[Socket] Connected:", socketRef.current.id);
-        });
-        socketRef.current.on("connect_error", (err) => {
+        };
+        const onConnectError = (err) => {
             console.warn("[Socket] Connection error:", err.message);
-        });
+        };
+
+        socketRef.current.on("connect", onConnect);
+        socketRef.current.on("connect_error", onConnectError);
 
         return () => {
             refCount--;
+            if (socketRef.current) {
+                socketRef.current.off("connect", onConnect);
+                socketRef.current.off("connect_error", onConnectError);
+            }
             // Only fully disconnect if no other consumers are active
             if (refCount === 0 && sharedSocket) {
                 sharedSocket.disconnect();

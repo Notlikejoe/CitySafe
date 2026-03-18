@@ -22,6 +22,7 @@ const runExpiryCheck = () => {
     store.alerts.forEach((a) => {
         if (a.active && new Date(a.expiresAt) < now) {
             a.active = false;
+            alertIndex.remove(a.id);
             count++;
         }
     });
@@ -142,6 +143,7 @@ export const deactivateAlert = (alertId, actorId) => tryCatch(() => {
     alert.active = false;
     alert.deactivatedAt = getTimestamp();
     alert.deactivatedBy = actorId;
+    alertIndex.remove(alertId);
     bumpVersion(alert);  // #3
     schedulePersist();   // #7
 

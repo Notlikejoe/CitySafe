@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useCallback } from "react";
+import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import L from "leaflet";
 import {
   MapContainer, TileLayer, Marker, Popup,
@@ -149,10 +149,14 @@ function MapController({ flyTo }) {
 }
 
 function PanListener({ onPan }) {
+  const timerRef = useRef(null);
   const map = useMapEvents({
     moveend: () => {
-      const center = map.getCenter();
-      onPan(center.lat, center.lng);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        const center = map.getCenter();
+        onPan(center.lat, center.lng);
+      }, 500);
     }
   });
   return null;

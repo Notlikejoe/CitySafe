@@ -8,7 +8,7 @@
  * #3 — createReport uses validateFields() for complete type/length/range checks.
  */
 
-import { store, reportIndex, REPORT_STATUS, REPORT_TRANSITIONS, REPORT_TYPE, bumpVersion, schedulePersist } from "../store.js";
+import { store, reportIndex, userIndices, insertUserEntity, REPORT_STATUS, REPORT_TRANSITIONS, REPORT_TYPE, bumpVersion, schedulePersist } from "../store.js";
 import { generateId, getTimestamp, calculateDistance, isValidLocation, isValidEnum, sanitize, validateFields, tryCatch, ok, err, paginate, log } from "../utils.js";
 import { awardPoints } from "./points.js";
 
@@ -53,6 +53,7 @@ export const createReport = (params) => tryCatch(() => {
 
     store.reports.push(report);
     reportIndex.insert(report.id, location.lat, location.lon);
+    insertUserEntity(report.userId, "reports", report);
     schedulePersist();
     log("info", "report.created", { reportId: report.id, userId, type, location });
     return ok(report);
@@ -90,8 +91,14 @@ export const transitionReportStatus = (reportId, newStatus, actorId, expectedVer
     report.status = newStatus;
     report.updatedAt = getTimestamp();
     report.statusHistory.push({ from: prev, to: newStatus, at: report.updatedAt, by: actorId });
-    bumpVersion(report);
-    schedulePersist();
+    bumpVersion(report);  // #3
+    
+    // Garbage collect from spatial index on terminal state
+    if ([REPORT_STATUS.REJECTED, REPORT_STATUS.RESOLVED, REPORT_STATUS.CANCELLED].includes(newStatus)) {
+        reportIndex.remove(reportId);
+    }
+
+    schedulePersist();    // #7
 
     log("info", "report.status_changed", { reportId, from: prev, to: newStatus, actorId, version: report.version });
 
@@ -147,10 +154,21 @@ export const getReportsByUser = (userId, statusFilter = null) => tryCatch(() => 
     return ok(results);
 }, "reports.getByUser");
 
+// ─── Cancel Report ────────────────────────────────────────────────────────────
+export const cancelReport = (reportId, userId) => tryCatch(() => {
+    if (!userId) return err("userId is required.");
+    const report = store.reports.find((r) => r.id === reportId);
+    if (!report) return err(`Report '${reportId}' not found.`);
+    if (report.userId !== userId) return err("Only the author can cancel this report.");
+    if (![REPORT_STATUS.SUBMITTED, REPORT_STATUS.UNDER_REVIEW].includes(report.status)) {
+        return err(`Report cannot be cancelled from status '${report.status}'.`);
+    }
+    return transitionReportStatus(reportId, REPORT_STATUS.CANCELLED, userId);
+}, "reports.cancel");
+
 // ─── Admin Verification ───────────────────────────────────────────────────────
 export const adminVerifyReport = (reportId, adminId) => tryCatch(() => {
     if (!adminId) return err("adminId is required.");
-    if (adminId.indexOf("admin_") !== 0) return err("Only admin accounts can verify reports.");
     const report = store.reports.find((r) => r.id === reportId);
     if (!report) return err(`Report '${reportId}' not found.`);
     if (report.status !== REPORT_STATUS.UNDER_REVIEW) {
@@ -162,7 +180,6 @@ export const adminVerifyReport = (reportId, adminId) => tryCatch(() => {
 
 export const adminRejectReport = (reportId, adminId) => tryCatch(() => {
     if (!adminId) return err("adminId is required.");
-    if (adminId.indexOf("admin_") !== 0) return err("Only admin accounts can reject reports.");
     const report = store.reports.find((r) => r.id === reportId);
     if (!report) return err(`Report '${reportId}' not found.`);
     if (![REPORT_STATUS.SUBMITTED, REPORT_STATUS.UNDER_REVIEW].includes(report.status)) {

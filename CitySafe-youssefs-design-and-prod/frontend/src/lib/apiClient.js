@@ -36,9 +36,11 @@ axiosInstance.interceptors.response.use(
             // Prevent infinite redirect loop if we are trying to login
             if (!error.config?.url?.includes("/auth/login")) {
                 localStorage.removeItem("cs_token");
-                toast.error("Session expired. Automatically reconnecting...");
+                toast.error("Session expired. Please log in again.");
                 setTimeout(() => {
-                    window.location.reload();
+                    if (window.location.pathname !== "/login") {
+                        window.location.href = "/login";
+                    }
                 }, 1500);
             }
         }

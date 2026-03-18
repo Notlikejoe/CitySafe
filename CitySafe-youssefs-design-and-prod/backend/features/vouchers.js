@@ -6,7 +6,7 @@
  * #7 — schedulePersist() called after every mutation.
  */
 
-import { store, POINTS_CONFIG, VOUCHER_CONFIG, schedulePersist } from "../store.js";
+import { store, POINTS_CONFIG, VOUCHER_CONFIG, schedulePersist, insertUserEntity, userIndices } from "../store.js";
 import { generateId, getTimestamp, addDays, tryCatch, ok, err, log } from "../utils.js";
 import { getUserBalance, deductPoints } from "./points.js";
 
@@ -47,6 +47,7 @@ const _createVoucher = (userId) => {
         redeemedAt: null,
     };
     store.vouchers.push(voucher);
+    insertUserEntity(userId, "vouchers", voucher);
     schedulePersist();  // #7
     return voucher;
 };
@@ -83,10 +84,10 @@ export const redeemVoucher = (voucherCode, userId) => tryCatch(() => {
 export const getUserVouchers = (userId, filters = {}) => tryCatch(() => {
     if (!userId) return err("userId is required.");
 
-    const now = new Date();
-    let vouchers = store.vouchers.filter((v) => v.userId === userId);
+    let vouchers = (userIndices.vouchers.get(userId) || []);
 
     if (filters.activeOnly) {
+        const now = new Date();
         vouchers = vouchers.filter((v) => !v.redeemed && new Date(v.expiresAt) >= now);
     }
     vouchers.sort((a, b) => new Date(b.issuedAt) - new Date(a.issuedAt));

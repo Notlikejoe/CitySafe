@@ -10,7 +10,7 @@
  * Persistence is gated behind PERSIST_STORE=true to keep the test runner clean.
  */
 
-import { SpatialIndex, log, readFileSync, writeFileSync, existsSync } from "./utils.js";
+import { SpatialIndex, log, readFileSync, writeFileSync, existsSync, renameSync } from "./utils.js";
 
 // ─── Persistence Config ───────────────────────────────────────────────────────
 const PERSIST = process.env.PERSIST_STORE === "true";
@@ -25,6 +25,7 @@ const defaultStore = () => ({
     pointsLedger: [],
     vouchers: [],
     users: {},
+    userSettings: {},
 });
 
 // ─── In-Memory Store ──────────────────────────────────────────────────────────
@@ -35,6 +36,29 @@ export const store = defaultStore();
 export const reportIndex = new SpatialIndex(0.1);  // 0.1° ≈ 11 km grid cells
 /** Index of all alerts by location — rebuilt on load. */
 export const alertIndex = new SpatialIndex(0.1);
+
+// ─── User Indices — Fix #8 ────────────────────────────────────────────────────
+export const userIndices = {
+    reports: new Map(), // userId -> array of report refs
+    sos: new Map(),
+    points: new Map(),
+    vouchers: new Map(),
+};
+
+export const insertUserEntity = (userId, type, entity) => {
+    if (!userId) return;
+    if (!userIndices[type].has(userId)) userIndices[type].set(userId, []);
+    userIndices[type].get(userId).push(entity);
+};
+
+export const rebuildUserIndices = () => {
+    userIndices.reports.clear(); userIndices.sos.clear();
+    userIndices.points.clear(); userIndices.vouchers.clear();
+    store.reports.forEach((r) => insertUserEntity(r.userId, "reports", r));
+    store.sosRequests.forEach((s) => insertUserEntity(s.userId, "sos", s));
+    store.pointsLedger.forEach((p) => insertUserEntity(p.userId, "points", p));
+    store.vouchers.forEach((v) => insertUserEntity(v.userId, "vouchers", v));
+};
 
 // ─── Version Helper — Fix #3 ──────────────────────────────────────────────────
 /**
@@ -59,6 +83,7 @@ export const resetStore = () => {
     // Clear indices
     reportIndex.cells.clear(); reportIndex.positions.clear();
     alertIndex.cells.clear(); alertIndex.positions.clear();
+    rebuildUserIndices();
     log("info", "store.reset", {});
 };
 
@@ -76,6 +101,7 @@ export const loadStore = () => {
         // Re-build spatial indices from persisted entities
         store.reports.forEach((r) => reportIndex.insert(r.id, r.location.lat, r.location.lon));
         store.alerts.forEach((a) => alertIndex.insert(a.id, a.location.lat, a.location.lon));
+        rebuildUserIndices();
         log("info", "store.loaded", { path: STORE_PATH, reports: store.reports.length, alerts: store.alerts.length });
     } catch (e) {
         log("error", "store.load_failed", { message: e.message });
@@ -88,7 +114,9 @@ export const loadStore = () => {
  */
 const persistNow = () => {
     try {
-        writeFileSync(STORE_PATH, JSON.stringify(store, null, 2), "utf-8");
+        const tmpPath = `${STORE_PATH}.tmp`;
+        writeFileSync(tmpPath, JSON.stringify(store, null, 2), "utf-8");
+        renameSync(tmpPath, STORE_PATH);
     } catch (e) {
         log("error", "store.persist_failed", { message: e.message });
     }
@@ -114,6 +142,7 @@ export const REPORT_STATUS = Object.freeze({
     VERIFIED: "verified",
     REJECTED: "rejected",
     RESOLVED: "resolved",
+    CANCELLED: "cancelled",
 });
 
 export const SOS_STATUS = Object.freeze({
@@ -162,11 +191,12 @@ export const SOS_URGENCY = Object.freeze({
 
 // ─── Valid Status Transitions ─────────────────────────────────────────────────
 export const REPORT_TRANSITIONS = Object.freeze({
-    [REPORT_STATUS.SUBMITTED]: [REPORT_STATUS.UNDER_REVIEW, REPORT_STATUS.REJECTED],
-    [REPORT_STATUS.UNDER_REVIEW]: [REPORT_STATUS.VERIFIED, REPORT_STATUS.REJECTED],
+    [REPORT_STATUS.SUBMITTED]: [REPORT_STATUS.UNDER_REVIEW, REPORT_STATUS.REJECTED, REPORT_STATUS.CANCELLED],
+    [REPORT_STATUS.UNDER_REVIEW]: [REPORT_STATUS.VERIFIED, REPORT_STATUS.REJECTED, REPORT_STATUS.CANCELLED],
     [REPORT_STATUS.VERIFIED]: [REPORT_STATUS.RESOLVED],
     [REPORT_STATUS.REJECTED]: [],
     [REPORT_STATUS.RESOLVED]: [],
+    [REPORT_STATUS.CANCELLED]: [],
 });
 
 export const SOS_TRANSITIONS = Object.freeze({

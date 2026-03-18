@@ -6,7 +6,7 @@
  * #7 — schedulePersist() called after every ledger mutation.
  */
 
-import { store, POINTS_CONFIG, schedulePersist } from "../store.js";
+import { store, POINTS_CONFIG, schedulePersist, insertUserEntity, userIndices } from "../store.js";
 import { generateId, getTimestamp, tryCatch, ok, err, log } from "../utils.js";
 import { issueVoucherIfEligible } from "./vouchers.js";
 
@@ -71,6 +71,7 @@ export const awardPoints = ({ userId, reason, referenceId, overrideAmount = null
     };
 
     store.pointsLedger.push(entry);
+    insertUserEntity(entry.userId, "points", entry);
     schedulePersist();  // #7
 
     log("info", "points.awarded", { userId, points, reason, referenceId });
@@ -106,6 +107,7 @@ export const deductPoints = (userId, amount, referenceId) => tryCatch(() => {
     };
 
     store.pointsLedger.push(entry);
+    insertUserEntity(entry.userId, "points", entry);
     schedulePersist();  // #7
 
     log("info", "points.deducted", { userId, amount, referenceId });
@@ -115,8 +117,7 @@ export const deductPoints = (userId, amount, referenceId) => tryCatch(() => {
 // ─── Get Ledger ───────────────────────────────────────────────────────────────
 export const getUserPointsLedger = (userId) => tryCatch(() => {
     if (!userId) return err("userId is required.");
-    const ledger = store.pointsLedger
-        .filter((e) => e.userId === userId)
+    const ledger = (userIndices.points.get(userId) || [])
         .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     return ok(ledger);
 }, "points.getLedger");

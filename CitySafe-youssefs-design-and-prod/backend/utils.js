@@ -3,7 +3,7 @@
  */
 
 import { randomUUID } from "crypto";
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, renameSync } from "fs";
 
 // ─── ID Generation ────────────────────────────────────────────────────────────
 export const generateId = () => randomUUID();

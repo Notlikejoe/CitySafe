@@ -8,7 +8,7 @@
  * - Pagination
  */
 
-import { store } from "../store.js";
+import { store, userIndices } from "../store.js";
 import { ok, err, paginate } from "../utils.js";
 import { getUserBalance } from "./points.js";
 import { getUserVouchers } from "./vouchers.js";
@@ -39,32 +39,28 @@ export const getUserHistory = (userId, { type = null, page = 1, pageSize = 20 } 
 
     // Reports
     if (!type || type === "report") {
-        const reports = store.reports
-            .filter((r) => r.userId === userId)
+        const reports = (userIndices.reports.get(userId) || [])
             .map((r) => ({ _type: "report", _timestamp: r.createdAt, ...r }));
         events.push(...reports);
     }
 
     // SOS
     if (!type || type === "sos") {
-        const sos = store.sosRequests
-            .filter((s) => s.userId === userId)
+        const sos = (userIndices.sos.get(userId) || [])
             .map((s) => ({ _type: "sos", _timestamp: s.createdAt, ...s }));
         events.push(...sos);
     }
 
     // Points
     if (!type || type === "point") {
-        const points = store.pointsLedger
-            .filter((p) => p.userId === userId)
+        const points = (userIndices.points.get(userId) || [])
             .map((p) => ({ _type: "point", _timestamp: p.timestamp, ...p }));
         events.push(...points);
     }
 
     // Vouchers
     if (!type || type === "voucher") {
-        const vouchers = store.vouchers
-            .filter((v) => v.userId === userId)
+        const vouchers = (userIndices.vouchers.get(userId) || [])
             .map((v) => ({ _type: "voucher", _timestamp: v.issuedAt, ...v }));
         events.push(...vouchers);
     }
@@ -79,8 +75,8 @@ export const getUserHistory = (userId, { type = null, page = 1, pageSize = 20 } 
     return ok({
         ...paged,
         summary: {
-            totalReports: store.reports.filter((r) => r.userId === userId).length,
-            totalSos: store.sosRequests.filter((s) => s.userId === userId).length,
+            totalReports: (userIndices.reports.get(userId) || []).length,
+            totalSos: (userIndices.sos.get(userId) || []).length,
             pointBalance: balResult.success ? balResult.data.balance : 0,
             activeVouchers: vouchersResult.success ? vouchersResult.data.length : 0,
         },
