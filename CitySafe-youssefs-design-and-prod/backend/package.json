@@ -1,0 +1,26 @@
+{
+  "name": "citysafe-backend",
+  "version": "2.0.0",
+  "description": "CitySafe Express API Server",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --testPathPattern=tests/ --forceExit",
+    "seed": "node index.js"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.3.1",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.1.1",
+    "socket.io": "^4.8.3"
+  }
+}
