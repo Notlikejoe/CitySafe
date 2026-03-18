@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { MapPin, FileWarning, Camera, ChevronRight, CheckCircle } from "lucide-react";
+import { MapPin, FileWarning, Camera, ChevronRight, CheckCircle, Loader2, AlertCircle } from "lucide-react";
 import { useCreateReport } from "../hooks/useReports";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { useOfflineQueue } from "../hooks/useOfflineQueue";
+import { useGeolocation } from "../hooks/useGeolocation";
 
 const REPORT_TYPES = [
   { id: "pothole", label: "Pothole", emoji: "🕳️" },
@@ -15,12 +16,13 @@ const REPORT_TYPES = [
   { id: "other", label: "Other", emoji: "📍" },
 ];
 
-const MOCK_LOCATION = { lat: 25.2048, lon: 55.2708 };
+
 
 export default function ReportPage() {
   const navigate = useNavigate();
   const { mutate: createReport, isPending } = useCreateReport();
   const { submitOrQueue } = useOfflineQueue();
+  const { location, error: geoError, loading: geoLoading } = useGeolocation();
 
   const [type, setType] = useState("");
   const [description, setDescription] = useState("");
@@ -41,7 +43,7 @@ export default function ReportPage() {
     if (Object.keys(errs).length) { setErrors(errs); return; }
     setErrors({});
 
-    const payload = { type, description, imageRef: imageRef || null, location: MOCK_LOCATION };
+    const payload = { type, description, imageRef: imageRef || null, location };
 
     // Offline-first: queue the report if we have no connectivity
     const queued = await submitOrQueue("report", payload);
@@ -129,16 +131,32 @@ export default function ReportPage() {
           {errors.type && <p className="text-xs text-red-500 mt-1.5" role="alert">{errors.type}</p>}
         </fieldset>
 
-        {/* ── Location (display-only — no interactive input) ── */}
+        {/* ── Location (display-only — uses real GPS) ── */}
         <div>
           <p className="block text-sm font-semibold text-slate-700 mb-2">Location</p>
-          <div className="flex items-center gap-2.5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <MapPin className="h-4 w-4 text-teal-500 shrink-0" aria-hidden="true" />
-            <div className="text-sm text-slate-600">
-              Dubai Marina Area
-              <div className="text-xs text-slate-400">Location detected automatically</div>
+          {geoLoading && (
+            <div className="flex items-center gap-2.5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
+              <Loader2 className="h-4 w-4 text-teal-500 shrink-0 animate-spin" aria-hidden="true" />
+              Detecting your location…
             </div>
-          </div>
+          )}
+          {!geoLoading && geoError && (
+            <div className="flex items-start gap-2.5 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden="true" />
+              {geoError}
+            </div>
+          )}
+          {!geoLoading && location && (
+            <div className="flex items-center gap-2.5 rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3">
+              <MapPin className="h-4 w-4 text-teal-600 shrink-0" aria-hidden="true" />
+              <div className="text-sm text-teal-800 font-medium">
+                Current Location
+                <div className="text-xs text-teal-600 font-normal mt-0.5">
+                  {location.lat.toFixed(5)}°N, {location.lon.toFixed(5)}°E
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── Description ── */}
@@ -181,7 +199,13 @@ export default function ReportPage() {
           </div>
         </div>
 
-        <Button type="submit" className="w-full" size="lg" loading={isPending}>
+        <Button
+          type="submit"
+          className="w-full"
+          size="lg"
+          loading={isPending}
+          disabled={isPending || geoLoading || !!geoError}
+        >
           {isPending ? "Submitting…" : "Submit Report"}
         </Button>
       </form>
