@@ -365,6 +365,7 @@ export default function DashboardPage() {
 
   return (
     <>
+      <div className="max-w-2xl mx-auto py-6 px-4 space-y-6">
 
       {/* ── A. Greeting ─────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-3 animate-fade-up">
