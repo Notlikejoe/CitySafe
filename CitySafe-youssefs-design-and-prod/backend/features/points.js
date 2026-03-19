@@ -11,6 +11,7 @@ import { generateId, getTimestamp, tryCatch, ok, err, log } from "../utils.js";
 import { issueVoucherIfEligible } from "./vouchers.js";
 
 const VALID_REASONS = Object.freeze([
+    "report_submitted",
     "report_verified",
     "sos_valid_usage",
     "manual_admin_grant",
@@ -50,6 +51,7 @@ export const awardPoints = ({ userId, reason, referenceId, overrideAmount = null
     }
 
     const pointMap = {
+        report_submitted: POINTS_CONFIG.REPORT_SUBMITTED,
         report_verified: POINTS_CONFIG.REPORT_VERIFIED,
         sos_valid_usage: POINTS_CONFIG.SOS_VALID_USAGE,
         manual_admin_grant: overrideAmount ?? 0,

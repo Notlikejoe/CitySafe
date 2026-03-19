@@ -56,6 +56,10 @@ export const createReport = (params) => tryCatch(() => {
     insertUserEntity(report.userId, "reports", report);
     schedulePersist();
     log("info", "report.created", { reportId: report.id, userId, type, location });
+
+    // Instantly award 10 submission points
+    awardPoints({ userId: report.userId, reason: "report_submitted", referenceId: report.id });
+
     return ok(report);
 }, "reports.create");
 

@@ -507,14 +507,14 @@ export default function DashboardPage() {
       </div>
 
       {/* ── F. CTA ───────────────────────────────────────────────────────────── */}
-      <div className="animate-fade-up pb-4" style={{ animationDelay: "180ms" }}>
+        <div className="animate-fade-up pb-4" style={{ animationDelay: "180ms" }}>
         <div className="rounded-2xl border border-slate-100 bg-slate-50 p-5 flex items-center gap-4">
           <div className="h-10 w-10 rounded-xl bg-teal-100 flex items-center justify-center shrink-0">
             <TrendingUp className="h-5 w-5 text-teal-600" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="text-sm font-bold text-slate-800">Keep contributing</div>
-            <div className="text-xs text-slate-500 mt-0.5">Each verified report earns 50 CityPoints toward your next reward.</div>
+            <div className="text-xs text-slate-500 mt-0.5">Each report submission earns 10 CityPoints, plus 40 when verified.</div>
           </div>
           <Button size="sm" onClick={() => navigate("/report")} className="shrink-0">
             Report

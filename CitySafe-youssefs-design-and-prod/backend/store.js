@@ -209,7 +209,8 @@ export const SOS_TRANSITIONS = Object.freeze({
 
 // ─── Points Configuration ─────────────────────────────────────────────────────
 export const POINTS_CONFIG = Object.freeze({
-    REPORT_VERIFIED: 50,
+    REPORT_SUBMITTED: 10,
+    REPORT_VERIFIED: 40,
     SOS_VALID_USAGE: 20,
     VOUCHER_THRESHOLD: 200,
     VOUCHER_COST: 200,
