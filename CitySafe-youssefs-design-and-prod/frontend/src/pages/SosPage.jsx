@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Siren, HeartPulse, Car, Zap, HelpCircle,
-  MapPin, CheckCircle, AlertTriangle, ChevronRight, Send, Loader2, RefreshCw,
+  MapPin, CheckCircle, AlertTriangle, ChevronRight, Send, Loader2, RefreshCw, Trash2,
 } from "lucide-react";
-import { useCreateSos } from "../hooks/useSos";
+import { useCreateSos, useCancelSos } from "../hooks/useSos";
 import { Button } from "../components/ui/Button";
 import { useOfflineQueue } from "../hooks/useOfflineQueue";
 
@@ -181,6 +181,7 @@ function useGeolocation() {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function SosPage() {
   const { mutate: createSos, isPending } = useCreateSos();
+  const { mutate: cancelSos, isPending: cancelling } = useCancelSos();
   const { location, geoState, refresh: refreshLocation } = useGeolocation();
   const { submitOrQueue } = useOfflineQueue();
 
@@ -245,6 +246,15 @@ export default function SosPage() {
 
   // ── Success state ──
   if (sent) {
+    const canCancel = ["pending", "under_review"].includes(sent.status);
+
+    const handleCancel = () => {
+      if (!window.confirm("Cancel this SOS request? Only do this if you no longer need help.")) return;
+      cancelSos(sent.id, {
+        onSuccess: () => setSent(null),
+      });
+    };
+
     return (
       <div className="max-w-lg mx-auto py-10 px-4 animate-fade-up">
         <div className="flex flex-col items-center text-center">
@@ -284,6 +294,19 @@ export default function SosPage() {
           <Button variant="secondary" className="mt-5 w-full" onClick={() => setSent(null)}>
             Send another request
           </Button>
+
+          {/* Cancel button — only if the request hasn't been responded to yet */}
+          {canCancel && (
+            <Button
+              variant="ghost"
+              className="mt-2 w-full text-red-500 hover:bg-red-50 hover:text-red-600"
+              loading={cancelling}
+              onClick={handleCancel}
+            >
+              <Trash2 className="h-4 w-4" />
+              Cancel this request
+            </Button>
+          )}
         </div>
       </div>
     );

@@ -1,197 +1,125 @@
-/**
- * CitySafe Reports Module
- *
- * Fixes applied (v3 audit):
- * #2 — transitionReportStatus accepts optional expectedVersion for optimistic locking.
- *      If provided and the entity has been mutated since it was read, return a
- *      409-style conflict error so the caller can re-fetch and retry.
- * #3 — createReport uses validateFields() for complete type/length/range checks.
- */
-
-import { store, reportIndex, userIndices, insertUserEntity, REPORT_STATUS, REPORT_TRANSITIONS, REPORT_TYPE, bumpVersion, schedulePersist } from "../store.js";
-import { generateId, getTimestamp, calculateDistance, isValidLocation, isValidEnum, sanitize, validateFields, tryCatch, ok, err, paginate, log } from "../utils.js";
+import { query } from "../db.js";
+import { tryCatch, ok, err, log, generateId } from "../utils.js";
 import { awardPoints } from "./points.js";
 
-// ─── Field limits ──────────────────────────────────────────────────────────────
-const FIELD_LIMITS = {
-    userId: { min: 1, max: 100 },
-    description: { min: 3, max: 1000 },
-    imageRef: { min: 0, max: 500 },
-};
-
 // ─── Create Report ────────────────────────────────────────────────────────────
-export const createReport = (params) => tryCatch(() => {
-    const { userId, location, type, imageRef = null } = params;
-    const description = sanitize(params.description ?? "");
+export const createReport = async (userId, payload) => {
+    const { type, description, location, imageRef } = payload;
+    if (!type || !location?.lat || !location?.lon) {
+        return err("Type, lat, and lon are required.");
+    }
+    
+    const sql = `
+        INSERT INTO reports (author_id, type, description, image_ref, location)
+        VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326))
+        RETURNING id, author_id, type, description, image_ref, status, created_at, 
+                  ST_X(location::geometry) as lon, ST_Y(location::geometry) as lat;
+    `;
+    
+    let authorId = userId;
+    if (!userId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        // Find or create dummy user by username
+        const uRes = await query(`SELECT id FROM users WHERE username = $1`, [userId]);
+        if (uRes.data?.rows?.length > 0) {
+            authorId = uRes.data.rows[0].id;
+        } else {
+            const newU = await query(`INSERT INTO users (username, password_hash) VALUES ($1, 'dummy') RETURNING id`, [userId]);
+            if (newU.success) authorId = newU.data.rows[0].id;
+        }
+    }
 
-    // Fix #3 — unified schema check before any business logic
-    const schemaErr = validateFields({
-        userId: { value: userId, ...FIELD_LIMITS.userId },
-        description: { value: description, ...FIELD_LIMITS.description },
-        imageRef: { value: imageRef, required: false, ...FIELD_LIMITS.imageRef },
-    });
-    if (schemaErr) return schemaErr;
-
-    if (!isValidLocation(location)) return err("A valid location { lat, lon } is required.");
-    if (!isValidEnum(type, REPORT_TYPE)) return err(`Invalid report type. Valid types: ${Object.values(REPORT_TYPE).join(", ")}`);
-
+    const res = await query(sql, [authorId, type, description, imageRef, location.lon, location.lat]);
+    if (!res.success) return err(res.error);
+    
+    const row = res.data.rows[0];
     const report = {
-        id: generateId(),
-        userId,
-        location,
-        type,
-        description,
-        imageRef,
-        status: REPORT_STATUS.SUBMITTED,
-        version: 1,
-        statusHistory: [
-            { from: null, to: REPORT_STATUS.SUBMITTED, at: getTimestamp(), by: userId }
-        ],
-        createdAt: getTimestamp(),
-        updatedAt: getTimestamp(),
+        id: row.id,
+        authorId: row.author_id,
+        type: row.type,
+        description: row.description,
+        imageRef: row.image_ref,
+        status: row.status,
+        createdAt: row.created_at,
+        location: { lat: row.lat, lon: row.lon }
     };
 
-    store.reports.push(report);
-    reportIndex.insert(report.id, location.lat, location.lon);
-    insertUserEntity(report.userId, "reports", report);
-    schedulePersist();
     log("info", "report.created", { reportId: report.id, userId, type, location });
 
     // Instantly award 10 submission points
-    awardPoints({ userId: report.userId, reason: "report_submitted", referenceId: report.id });
+    awardPoints({ userId: report.authorId, reason: "report_submitted", referenceId: report.id });
 
     return ok(report);
-}, "reports.create");
+};
 
 // ─── Transition Status ────────────────────────────────────────────────────────
-/**
- * Fix #2 — Optimistic locking: pass the version you read to guard against
- * concurrent mutations. If another write happened between your read and this
- * call the version will have incremented and you'll get a conflict error.
- *
- * @param {string} reportId
- * @param {string} newStatus
- * @param {string} actorId
- * @param {number|null} [expectedVersion=null]  — omit to skip the check
- */
-export const transitionReportStatus = (reportId, newStatus, actorId, expectedVersion = null) => tryCatch(() => {
-    const report = store.reports.find((r) => r.id === reportId);
-    if (!report) return err(`Report '${reportId}' not found.`);
-    if (!isValidEnum(newStatus, REPORT_STATUS)) return err(`Invalid target status: '${newStatus}'.`);
-
-    // Fix #2 — Optimistic version check
-    if (expectedVersion !== null && report.version !== expectedVersion) {
-        return err(
-            `Version conflict on report '${reportId}': expected v${expectedVersion} but current is v${report.version}. Re-fetch and retry.`
-        );
-    }
-
-    const allowed = REPORT_TRANSITIONS[report.status];
-    if (!allowed.includes(newStatus)) {
-        return err(`Cannot transition from '${report.status}' to '${newStatus}'. Allowed: [${allowed.join(", ") || "none"}].`);
-    }
-
-    const prev = report.status;
-    report.status = newStatus;
-    report.updatedAt = getTimestamp();
-    report.statusHistory.push({ from: prev, to: newStatus, at: report.updatedAt, by: actorId });
-    bumpVersion(report);  // #3
+export const transitionReportStatus = async (reportId, newStatus) => {
+    const valid = ["under_review", "verified", "resolved", "rejected", "cancelled"];
+    if (!valid.includes(newStatus)) return err("Invalid status");
     
-    // Garbage collect from spatial index on terminal state
-    if ([REPORT_STATUS.REJECTED, REPORT_STATUS.RESOLVED, REPORT_STATUS.CANCELLED].includes(newStatus)) {
-        reportIndex.remove(reportId);
-    }
+    const res = await query(
+        `UPDATE reports SET status = $1 WHERE id = $2 RETURNING id, status`,
+        [newStatus, reportId]
+    );
+    
+    if (!res.success) return err(res.error);
+    if (res.data.rowCount === 0) return err("Report not found", 404);
+    
+    return ok(res.data.rows[0]);
+};
 
-    schedulePersist();    // #7
-
-    log("info", "report.status_changed", { reportId, from: prev, to: newStatus, actorId, version: report.version });
-
-    if (newStatus === REPORT_STATUS.VERIFIED) {
-        awardPoints({ userId: report.userId, reason: "report_verified", referenceId: report.id });
-    }
-
-    return ok(report);
-}, "reports.transition");
+export const adminVerifyReport = (reportId) => transitionReportStatus(reportId, "verified");
+export const adminRejectReport = (reportId) => transitionReportStatus(reportId, "rejected");
+export const cancelReport = (reportId) => transitionReportStatus(reportId, "cancelled");
 
 // ─── Get Nearby Reports ───────────────────────────────────────────────────────
-export const getNearbyReports = (location, radiusKm, options = {}) => tryCatch(() => {
-    if (!isValidLocation(location)) return err("A valid location { lat, lon } is required.");
-    if (typeof radiusKm !== "number" || radiusKm <= 0) return err("radiusKm must be a positive number.");
-
-    const { type, status, page = 1, pageSize = 50 } = options;
-
-    const rangeErr = validateFields({
-        page: { value: page, type: "number", min: 1, label: "page" },
-        pageSize: { value: pageSize, type: "number", min: 1, max: 100, label: "pageSize" },
-        radiusKm: { value: radiusKm, type: "number", min: 0.01, max: 50, label: "radiusKm" },
-    });
-    if (rangeErr) return rangeErr;
-
-    const candidateIds = reportIndex.query(location.lat, location.lon, radiusKm);
-    let results = store.reports.filter((r) => {
-        if (!candidateIds.has(r.id)) return false;
-        return calculateDistance(location.lat, location.lon, r.location.lat, r.location.lon) <= radiusKm;
-    });
-
-    if (type) {
-        if (!isValidEnum(type, REPORT_TYPE)) return err(`Invalid filter type: '${type}'.`);
-        results = results.filter((r) => r.type === type);
-    }
-    if (status) {
-        if (!isValidEnum(status, REPORT_STATUS)) return err(`Invalid filter status: '${status}'.`);
-        results = results.filter((r) => r.status === status);
-    }
-
-    results.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    return ok(paginate(results, page, pageSize));
-}, "reports.getNearby");
+export const getNearbyReports = async (lat, lon, radiusKm = 5, page = 1) => {
+    const radiusMeters = radiusKm * 1000;
+    
+    const sql = `
+        SELECT id, author_id as "authorId", type, description, image_ref as "imageRef", status, created_at as "createdAt",
+               ST_X(location::geometry) as lon, ST_Y(location::geometry) as lat,
+               ST_Distance(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) as distance_m
+        FROM reports
+        WHERE ST_DWithin(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
+        ORDER BY created_at DESC
+        LIMIT $4 OFFSET $5
+    `;
+    
+    const res = await query(sql, [lon, lat, radiusMeters, 50, (page - 1) * 50]);
+    if (!res.success) return err(res.error);
+    
+    const items = res.data.rows.map(r => ({
+        ...r,
+        location: { lat: r.lat, lon: r.lon }
+    }));
+    
+    return ok({ items, page, pageSize: 50 });
+};
 
 // ─── Get Reports By User ──────────────────────────────────────────────────────
-export const getReportsByUser = (userId, statusFilter = null) => tryCatch(() => {
-    if (!userId) return err("userId is required.");
-    let results = store.reports.filter((r) => r.userId === userId);
-    if (statusFilter) {
-        if (!isValidEnum(statusFilter, REPORT_STATUS)) return err(`Invalid status filter: '${statusFilter}'.`);
-        results = results.filter((r) => r.status === statusFilter);
+export const getReportsByUser = async (userId, page = 1) => {
+    let authorId = userId;
+    if (!userId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        const uRes = await query(`SELECT id FROM users WHERE username = $1`, [userId]);
+        if (uRes.data?.rows?.length > 0) authorId = uRes.data.rows[0].id;
     }
-    results.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    return ok(results);
-}, "reports.getByUser");
-
-// ─── Cancel Report ────────────────────────────────────────────────────────────
-export const cancelReport = (reportId, userId) => tryCatch(() => {
-    if (!userId) return err("userId is required.");
-    const report = store.reports.find((r) => r.id === reportId);
-    if (!report) return err(`Report '${reportId}' not found.`);
-    if (report.userId !== userId) return err("Only the author can cancel this report.");
-    if (![REPORT_STATUS.SUBMITTED, REPORT_STATUS.UNDER_REVIEW].includes(report.status)) {
-        return err(`Report cannot be cancelled from status '${report.status}'.`);
-    }
-    return transitionReportStatus(reportId, REPORT_STATUS.CANCELLED, userId);
-}, "reports.cancel");
-
-// ─── Admin Verification ───────────────────────────────────────────────────────
-export const adminVerifyReport = (reportId, adminId) => tryCatch(() => {
-    if (!adminId) return err("adminId is required.");
-    const report = store.reports.find((r) => r.id === reportId);
-    if (!report) return err(`Report '${reportId}' not found.`);
-    if (report.status !== REPORT_STATUS.UNDER_REVIEW) {
-        return err(`Report must be in '${REPORT_STATUS.UNDER_REVIEW}' before it can be verified.`);
-    }
-    log("info", "report.admin_verify", { reportId, adminId });
-    return transitionReportStatus(reportId, REPORT_STATUS.VERIFIED, adminId);
-}, "reports.adminVerify");
-
-export const adminRejectReport = (reportId, adminId) => tryCatch(() => {
-    if (!adminId) return err("adminId is required.");
-    const report = store.reports.find((r) => r.id === reportId);
-    if (!report) return err(`Report '${reportId}' not found.`);
-    if (![REPORT_STATUS.SUBMITTED, REPORT_STATUS.UNDER_REVIEW].includes(report.status)) {
-        return err(`Report cannot be rejected from status '${report.status}'.`);
-    }
-    if (report.status === REPORT_STATUS.SUBMITTED) {
-        transitionReportStatus(reportId, REPORT_STATUS.UNDER_REVIEW, adminId);
-    }
-    log("info", "report.admin_reject", { reportId, adminId });
-    return transitionReportStatus(reportId, REPORT_STATUS.REJECTED, adminId);
-}, "reports.adminReject");
+    
+    const sql = `
+        SELECT id, author_id as "authorId", type, description, image_ref as "imageRef", status, created_at as "createdAt",
+               ST_X(location::geometry) as lon, ST_Y(location::geometry) as lat
+        FROM reports
+        WHERE author_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+    `;
+    
+    const res = await query(sql, [authorId, 50, (page - 1) * 50]);
+    if (!res.success) return err(res.error);
+    
+    const items = res.data.rows.map(r => ({
+        ...r,
+        location: { lat: r.lat, lon: r.lon }
+    }));
+    
+    return ok({ items, page, pageSize: 50, totalPages: Math.ceil(items.length / 50) });
+};

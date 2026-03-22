@@ -14,14 +14,11 @@ const axiosInstance = axios.create({
     baseURL: API_URL,
     timeout: 10_000,
     headers: { "Content-Type": "application/json" },
+    withCredentials: true, // Allow cookies to be sent and received
 });
 
-axiosInstance.interceptors.request.use((config) => {
-    // Attach auth token if available
-    const token = localStorage.getItem("cs_token");
-    if (token) config.headers.Authorization = `Bearer ${token}`;
-    return config;
-});
+// The manual Authorization header interceptor has been removed
+// because authentication relies on HTTPOnly cookies sent automatically.
 
 axiosInstance.interceptors.response.use(
     (res) => res,
@@ -35,7 +32,7 @@ axiosInstance.interceptors.response.use(
         if (error.response?.status === 401 && !USE_MOCK) {
             // Prevent infinite redirect loop if we are trying to login
             if (!error.config?.url?.includes("/auth/login")) {
-                localStorage.removeItem("cs_token");
+                // Let the server clear the cookie automatically or handle session expiry
                 toast.error("Session expired. Please log in again.");
                 setTimeout(() => {
                     if (window.location.pathname !== "/auth") {

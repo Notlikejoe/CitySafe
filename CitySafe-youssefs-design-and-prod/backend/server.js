@@ -10,8 +10,9 @@
 
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 import { createServer } from "http";
-import { Server as SocketIO } from "socket.io";
+import { Server } from "socket.io"; // Changed from SocketIO
 import rateLimit from "express-rate-limit";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
@@ -20,17 +21,23 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import crypto from "crypto";
+import fs from "fs"; // Added
+import he from "he"; // Added
+import cookieParser from "cookie-parser";
+import { query } from "./db.js"; // Added
 
 dotenv.config();
 
 // ─── Domain imports ─────────────────────────────────────────────────────────
 import { createReport, transitionReportStatus, getNearbyReports, getReportsByUser, adminVerifyReport, adminRejectReport, cancelReport } from "./features/reports.js";
-import { createAlert, getNearbyAlerts, getAlertsFeed, deactivateAlert, expireAlerts } from "./features/alerts.js";
-import { createSos, transitionSosStatus, getUserSosHistory } from "./features/sos.js";
-import { getUserBalance, getUserPointsLedger, awardPoints } from "./features/points.js";
-import { redeemVoucher, getUserVouchers } from "./features/vouchers.js";
+import { createAlert, getActiveAlerts } from "./features/alerts.js";
+import { createSosRequest, updateSosStatus, getActiveSosRequests, getSosRequestsByUser } from "./features/sos.js";
+import { awardPoints, getPointsLeaderboard, getUserLedger } from "./features/points.js";
+import { getVouchers, redeemVoucher } from "./features/vouchers.js";
 import { getUserHistory } from "./features/history.js";
-import { store, loadStore, schedulePersist } from "./store.js";
+import { getCrowdZones } from "./features/crowd.js";
+import { searchContent } from "./features/search.js";
+import { query } from "./db.js";
 import { log } from "./utils.js";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -42,8 +49,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ─── App Setup ────────────────────────────────────────────────────────────────
 const app = express();
 const httpServer = createServer(app);
-const io = new SocketIO(httpServer, {
-    cors: { origin: "*", methods: ["GET", "POST", "PATCH", "DELETE"] }
+const io = new Server(httpServer, { // Changed from SocketIO
+    cors: { origin: "*", credentials: true } // Added credentials
 });
 
 // Attach io to app so controllers can emit
@@ -61,14 +68,42 @@ const storage = multer.diskStorage({
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5 MB cap
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-app.use(cors());
+app.use(cookieParser()); // Added
+const ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8888",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8888",
+];
+app.use(cors({
+    origin: (origin, callback) => {
+        // Allow requests with no origin (e.g. mobile apps, curl) or matching origins
+        if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error(`CORS: origin ${origin} not allowed`));
+        }
+    },
+    credentials: true
+}));
 
-// Content Security Policy
-app.use((req, res, next) => {
-    res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; form-action 'self'; frame-ancestors 'none';");
-    next();
-});
-app.use(express.json({ limit: "2mb" }));
+// Security headers via helmet
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            imgSrc: ["'self'", "data:", "blob:"],
+            connectSrc: ["'self'"],
+            formAction: ["'self'"],
+            frameAncestors: ["'none'"],
+        },
+    },
+}));
+app.use(express.json({ limit: "2mb" })); // Kept limit
 app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(uploadDir));
 
@@ -81,19 +116,19 @@ app.use((req, _res, next) => {
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
 const globalLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 min
-    max: 5000, // Greatly increased for dev stability
+    max: 100, // 100 requests per 15 min per IP (human-usage threshold)
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, error: "Too many requests, please try again later." },
 });
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 1000, // Greatly increased for dev auto-logins
+    max: 20, // 20 login attempts per 15 min per IP
     message: { success: false, error: "Too many login attempts, please try again later." },
 });
 const sosLimiter = rateLimit({
     windowMs: 10 * 60 * 1000,
-    max: 500,
+    max: 10, // 10 SOS requests per 10 min per IP
     message: { success: false, error: "Too many SOS requests from this IP." },
 });
 app.use(globalLimiter);
@@ -102,11 +137,10 @@ app.use(globalLimiter);
 
 /** Verifies JWT and attaches req.user = { userId, role } */
 const requireAuth = (req, res, next) => {
-    const header = req.headers.authorization;
-    if (!header || !header.startsWith("Bearer ")) {
-        return res.status(401).json({ success: false, error: "Authorization header missing or malformed." });
+    const token = req.cookies?.cs_token; // Read token from cookie
+    if (!token) {
+        return res.status(401).json({ success: false, error: "Missing or invalid token cookie." });
     }
-    const token = header.slice(7);
     try {
         const payload = jwt.verify(token, JWT_SECRET);
         req.user = payload; // { userId, role }
@@ -149,63 +183,98 @@ const created = (res, result) => {
     return res.status(400).json({ error: result.error });
 };
 
+// Helper for consistent success responses
+const ok = (res, data) => res.json({ success: true, data });
+// Helper for consistent error responses
+const unauthorized = (res, message = "Unauthorized") => res.status(401).json({ success: false, error: message });
+
+
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 app.post("/api/auth/register", authLimiter, async (req, res) => {
     const { userId, password, displayName } = req.body;
-    if (!userId || !password) return res.status(400).json({ error: "userId and password required." });
-    if (store.users[userId]) return res.status(409).json({ error: "User already exists." });
+    if (!userId || !password) return res.status(400).json({ error: "Missing credentials" });
+    if (userId.length < 3) return res.status(400).json({ error: "Username must be at least 3 characters." });
     if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters." });
-    if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
-        return res.status(400).json({ error: "Password must contain at least one letter and one number." });
+
+    const existing = await query(`SELECT id FROM users WHERE username = $1`, [userId]);
+    if (existing.success && existing.data?.rows?.length > 0) {
+        return res.status(400).json({ error: "Username already exists." });
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
-    store.users[userId] = { passwordHash, role: "user", displayName: displayName ?? userId };
-    schedulePersist();
+    const hash = await bcrypt.hash(password, 10);
+    const insertRes = await query(
+        `INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'member') RETURNING id, role`,
+        [userId, hash]
+    );
 
-    const token = jwt.sign({ userId, role: "user" }, JWT_SECRET, { expiresIn: "24h" });
+    if (!insertRes.success) return res.status(500).json({ error: "Registration failed." });
+
+    const newUid = insertRes.data.rows[0].id;
+    const role = insertRes.data.rows[0].role;
+
+    // Award sign up points using the Postgres function
+    await query(`SELECT award_points($1, $2, $3)`, [newUid, 50, "Welcome to CitySafe"]);
+
+    const token = jwt.sign({ userId: newUid, role }, JWT_SECRET, { expiresIn: "24h" });
     log("info", "auth.register", { userId });
-    return res.status(201).json({ userId, role: "user", displayName: displayName ?? userId, token });
+
+    res.cookie('cs_token', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 24 * 60 * 60 * 1000
+    });
+    return res.status(201).json({ userId: newUid, role, displayName: displayName ?? userId });
 });
 
 app.post("/api/auth/login", authLimiter, async (req, res) => {
     const { userId, password } = req.body;
-    if (!userId || !password) return res.status(400).json({ error: "userId and password required." });
+    if (!userId || !password) return res.status(400).json({ error: "Missing credentials" });
 
-    const user = store.users[userId];
-    if (!user) return res.status(401).json({ error: "Invalid credentials." });
+    const searchRes = await query(`SELECT id, username, password_hash, role FROM users WHERE username = $1`, [userId]);
+    if (!searchRes.success || searchRes.data?.rows?.length === 0) {
+        await bcrypt.compare(password, "$2b$10$XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
+        return res.status(401).json({ error: "Invalid credentials." });
+    }
 
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) return res.status(401).json({ error: "Invalid credentials." });
+    const user = searchRes.data.rows[0];
+    const match = await bcrypt.compare(password, user.password_hash);
+    if (!match) return res.status(401).json({ error: "Invalid credentials." });
 
-    const token = jwt.sign({ userId, role: user.role }, JWT_SECRET, { expiresIn: "24h" });
+    const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: "24h" });
     log("info", "auth.login", { userId, role: user.role });
-    return res.json({ userId, role: user.role, displayName: user.displayName, token });
+
+    res.cookie('cs_token', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 24 * 60 * 60 * 1000
+    });
+    return res.json({ userId: user.id, role: user.role, displayName: user.username });
 });
 
-app.get("/api/auth/me", requireAuth, (req, res) => {
-    const user = store.users[req.user.userId];
-    if (!user) return res.status(404).json({ error: "User not found." });
-    return res.json({ userId: req.user.userId, role: req.user.role, displayName: user.displayName });
+app.get("/api/auth/me", requireAuth, async (req, res) => {
+    const userRes = await query(`SELECT username FROM users WHERE id = $1`, [req.user.userId]);
+    if (!userRes.success || userRes.data?.rows?.length === 0) {
+        return res.status(404).json({ error: "User not found." });
+    }
+    const displayName = userRes.data.rows[0].username;
+    return res.json({ userId: req.user.userId, role: req.user.role, displayName });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+    res.clearCookie('cs_token');
+    return res.json({ success: true, message: "Logged out" });
 });
 
 // ─── Reports Routes ───────────────────────────────────────────────────────────
-app.get("/api/reports", requireAuth, (req, res) => {
-    const { lat, lon, radius = 5, type, status, page, pageSize } = req.query;
+app.get("/api/reports", requireAuth, async (req, res) => {
+    const { lat, lon, radius = 5, page = 1 } = req.query;
     if (lat && lon) {
-        const result = getNearbyReports(
-            { lat: parseFloat(lat), lon: parseFloat(lon) },
-            parseFloat(radius),
-            {
-                type, status,
-                page: page ? parseInt(page) : 1,
-                pageSize: pageSize ? parseInt(pageSize) : 50,
-            }
-        );
+        const result = await getNearbyReports(parseFloat(lat), parseFloat(lon), parseFloat(radius), parseInt(page));
         return send(res, result);
     }
-    // Fallback: return all if no location given
-    return res.json(store.reports);
+    return res.json([]);
 });
 
 app.post("/api/reports", requireAuth, upload.single("image"), (req, res) => {
@@ -223,10 +292,10 @@ app.post("/api/reports", requireAuth, upload.single("image"), (req, res) => {
     return created(res, result);
 });
 
-app.get("/api/reports/:id", requireAuth, (req, res) => {
-    const report = store.reports.find((r) => r.id === req.params.id);
-    if (!report) return res.status(404).json({ error: "Report not found." });
-    return res.json(report);
+app.get("/api/reports/:id", requireAuth, async (req, res) => {
+    const q = await query(`SELECT * FROM reports WHERE id = $1`, [req.params.id]);
+    if (!q.success || q.data.rows.length === 0) return res.status(404).json({ error: "Report not found." });
+    return res.json(q.data.rows[0]);
 });
 
 app.patch("/api/reports/:id/status", requireAuth, requireAdmin, (req, res) => {
@@ -257,114 +326,116 @@ app.get("/api/users/:id/reports", requireAuth, requireOwnerOrAdmin((req) => req.
 });
 
 // ─── Alerts Routes ────────────────────────────────────────────────────────────
-app.get("/api/alerts", requireAuth, (req, res) => {
+app.get("/api/alerts", requireAuth, async (req, res) => {
     const { lat, lon, radius = 5 } = req.query;
     if (lat && lon) {
-        const result = getNearbyAlerts(
-            { lat: parseFloat(lat), lon: parseFloat(lon) },
-            parseFloat(radius)
-        );
+        const result = await getActiveAlerts(parseFloat(lat), parseFloat(lon), parseFloat(radius));
         return send(res, result);
     }
-    const result = getAlertsFeed();
+    return res.json([]);
+});
+
+app.get("/api/alerts/feed", requireAuth, async (req, res) => {
+    // For feed, just return active alerts in a large radius
+    const result = await getActiveAlerts(0, 0, 100000);
     return send(res, result);
 });
 
-app.get("/api/alerts/feed", requireAuth, (req, res) => {
-    const result = getAlertsFeed({ includeExpired: req.query.includeExpired === "true" });
-    return send(res, result);
-});
-
-app.post("/api/alerts", requireAuth, requireAdmin, (req, res) => {
-    const result = createAlert({ ...req.body, createdBy: req.user.userId });
+app.post("/api/alerts", requireAuth, requireAdmin, async (req, res) => {
+    const result = await createAlert(req.user.userId, req.body);
     if (result.success) req.app.get("io").emit("alert:new", result.data);
     return created(res, result);
 });
 
-app.patch("/api/alerts/:id", requireAuth, requireAdmin, (req, res) => {
-    const result = deactivateAlert(req.params.id, req.user.userId);
-    if (result.success) req.app.get("io").emit("alert:deactivated", result.data);
-    return send(res, result);
+app.patch("/api/alerts/:id", requireAuth, requireAdmin, async (req, res) => {
+    const queryRes = await query(`UPDATE alerts SET active = false WHERE id = $1 RETURNING *`, [req.params.id]);
+    if (queryRes.success && queryRes.data.rows.length > 0) {
+        req.app.get("io").emit("alert:deactivated", queryRes.data.rows[0]);
+        return res.json(queryRes.data.rows[0]);
+    }
+    return res.status(404).json({ error: "Alert not found" });
 });
 
 // ─── SOS Routes ───────────────────────────────────────────────────────────────
-app.post("/api/sos", requireAuth, sosLimiter, (req, res) => {
-    const result = createSos({
-        userId: req.user.userId,
-        type: req.body.type,
-        location: req.body.location,
-        urgency: req.body.urgency,
-        description: req.body.description,
-    });
+app.post("/api/sos", requireAuth, sosLimiter, async (req, res) => {
+    const result = await createSosRequest(req.user.userId, req.body);
     if (result.success) req.app.get("io").emit("sos:new", result.data);
     return created(res, result);
 });
 
-app.get("/api/sos/:id", requireAuth, (req, res) => {
-    const sos = store.sosRequests.find((s) => s.id === req.params.id);
-    if (!sos) return res.status(404).json({ error: "SOS not found." });
-    if (req.user.role !== "admin" && sos.userId !== req.user.userId) {
+app.get("/api/sos/:id", requireAuth, async (req, res) => {
+    const q = await query(`SELECT * FROM sos_requests WHERE id = $1`, [req.params.id]);
+    if (!q.success || q.data.rows.length === 0) return res.status(404).json({ error: "SOS not found." });
+
+    const sos = q.data.rows[0];
+    if (req.user.role !== "admin" && sos.requester_id !== req.user.userId) {
         return res.status(403).json({ error: "Forbidden." });
     }
     return res.json(sos);
 });
 
-app.patch("/api/sos/:id/status", requireAuth, (req, res) => {
-    const sos = store.sosRequests.find((s) => s.id === req.params.id);
-    if (!sos) return res.status(404).json({ error: "SOS not found." });
-    // Cancel: owner or admin. Accept/progress/resolve: admin only.
+app.patch("/api/sos/:id/status", requireAuth, async (req, res) => {
+    const q = await query(`SELECT * FROM sos_requests WHERE id = $1`, [req.params.id]);
+    if (!q.success || q.data.rows.length === 0) return res.status(404).json({ error: "SOS not found." });
+
+    const sos = q.data.rows[0];
     const isCancelling = req.body.status === "cancelled";
     if (!isCancelling && req.user.role !== "admin") {
         return res.status(403).json({ error: "Only admins can progress SOS status." });
     }
-    if (isCancelling && sos.userId !== req.user.userId && req.user.role !== "admin") {
+    if (isCancelling && sos.requester_id !== req.user.userId && req.user.role !== "admin") {
         return res.status(403).json({ error: "Forbidden." });
     }
-    const result = transitionSosStatus(req.params.id, req.body.status, req.user.userId, req.body.expectedVersion ?? null);
+    const result = await updateSosStatus(req.params.id, req.body.status);
     if (result.success) req.app.get("io").emit("sos:updated", result.data);
     return send(res, result);
 });
 
-app.get("/api/users/:id/sos", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const result = getUserSosHistory(req.params.id, req.query.status ?? null);
+app.get("/api/users/:id/sos", requireAuth, requireOwnerOrAdmin((req) => req.params.id), async (req, res) => {
+    const result = await getSosRequestsByUser(req.params.id, parseInt(req.query.page || "1"));
     return send(res, result);
 });
 
 // ─── Points Routes ────────────────────────────────────────────────────────────
-app.get("/api/users/:id/points", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const result = getUserBalance(req.params.id);
+app.get("/api/users/:id/points", requireAuth, requireOwnerOrAdmin((req) => req.params.id), async (req, res) => {
+    const result = await getUserLedger(req.params.id);
+    if (result.success) {
+        return res.json({ balance: result.data.totalPoints });
+    }
     return send(res, result);
 });
 
-app.get("/api/users/:id/points/ledger", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const result = getUserPointsLedger(req.params.id);
+app.get("/api/users/:id/points/ledger", requireAuth, requireOwnerOrAdmin((req) => req.params.id), async (req, res) => {
+    const result = await getUserLedger(req.params.id);
     return send(res, result);
 });
 
-app.post("/api/users/:id/points", requireAuth, requireAdmin, (req, res) => {
-    const result = awardPoints({
+app.post("/api/users/:id/points", requireAuth, requireAdmin, async (req, res) => {
+    const result = await awardPoints({
         userId: req.params.id,
-        reason: req.body.reason,
-        referenceId: req.body.referenceId,
-        overrideAmount: req.body.overrideAmount ?? null,
+        reason: req.body.reason
     });
     return send(res, result);
 });
 
 // ─── Vouchers Routes ──────────────────────────────────────────────────────────
-app.get("/api/users/:id/vouchers", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const result = getUserVouchers(req.params.id, { activeOnly: req.query.activeOnly === "true" });
-    return send(res, result);
+app.get("/api/users/:id/vouchers", requireAuth, requireOwnerOrAdmin((req) => req.params.id), async (req, res) => {
+    const vRes = await query(`
+        SELECT uv.id, v.code, v.sponsor, uv.redeemed_at 
+        FROM user_vouchers uv JOIN vouchers v ON uv.voucher_id = v.id 
+        WHERE uv.user_id = $1
+    `, [req.params.id]);
+    return res.json(vRes.success ? vRes.data.rows : []);
 });
 
-app.post("/api/vouchers/:id/redeem", requireAuth, (req, res) => {
-    const result = redeemVoucher(req.params.id, req.user.userId);
+app.post("/api/vouchers/:id/redeem", requireAuth, async (req, res) => {
+    const result = await redeemVoucher(req.user.userId, req.params.id);
     return send(res, result);
 });
 
 // ─── History Routes ───────────────────────────────────────────────────────────
-app.get("/api/users/:id/history", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const result = getUserHistory(req.params.id, {
+app.get("/api/users/:id/history", requireAuth, requireOwnerOrAdmin((req) => req.params.id), async (req, res) => {
+    const result = await getUserHistory(req.params.id, {
         type: req.query.type ?? null,
         page: req.query.page ? parseInt(req.query.page) : 1,
         pageSize: req.query.pageSize ? parseInt(req.query.pageSize) : (req.query.limit ? parseInt(req.query.limit) : 20),
@@ -374,17 +445,33 @@ app.get("/api/users/:id/history", requireAuth, requireOwnerOrAdmin((req) => req.
 
 // ─── User Settings ────────────────────────────────────────────────────────────
 app.get("/api/users/:id/settings", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const settings = store.userSettings[req.params.id] ?? { anonymousReports: false, notifications: true };
-    return res.json(settings);
+    return res.json({ anonymousReports: false, notifications: true });
 });
 
 app.patch("/api/users/:id/settings", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const current = store.userSettings[req.params.id] ?? { anonymousReports: false, notifications: true };
-    const updated = { ...current, ...req.body };
-    store.userSettings[req.params.id] = updated;
-    schedulePersist();
+    const updated = { anonymousReports: false, notifications: true, ...req.body };
     log("info", "user.settings_updated", { userId: req.params.id, settings: updated });
     return res.json(updated);
+});
+
+// ─── Search Route ─────────────────────────────────────────────────────────────
+app.get("/api/search", requireAuth, (req, res) => {
+    const { q, lat, lon, radius, type, page } = req.query;
+    const opts = {
+        lat: lat ? parseFloat(lat) : undefined,
+        lon: lon ? parseFloat(lon) : undefined,
+        radius: radius ? parseFloat(radius) : 10,
+        type: type || undefined,
+        page: page ? parseInt(page, 10) : 1,
+    };
+    const result = searchContent(q, opts);
+    return send(res, result);
+});
+
+// ─── Crowd Density Route ──────────────────────────────────────────────────────
+app.get("/api/crowd-density", requireAuth, async (req, res) => {
+    const result = await getCrowdZones();
+    return send(res, result);
 });
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
@@ -421,26 +508,9 @@ io.on("connection", (socket) => {
     });
 });
 
-// ─── Periodic alert cleanup ───────────────────────────────────────────────────
-setInterval(() => expireAlerts(), 5 * 60 * 1000); // every 5 min
-
 // ─── Start ────────────────────────────────────────────────────────────────────
-loadStore();
-
-// Seed default users if store is empty
-if (Object.keys(store.users).length === 0) {
-    store.users["user_demo"] = {
-        passwordHash: bcrypt.hashSync("demo1234", 10),
-        role: "user",
-        displayName: "Demo User",
-    };
-    store.users["admin_01"] = {
-        passwordHash: bcrypt.hashSync("admin1234", 10),
-        role: "admin",
-        displayName: "Admin",
-    };
-    schedulePersist();
-}
+// Note: alert expiry is handled in PostgreSQL via expires_at column.
+// Seed users are provisioned directly via the database (init.sql).
 
 httpServer.listen(PORT, () => {
     log("info", "server.started", { port: PORT, mode: process.env.NODE_ENV ?? "development" });

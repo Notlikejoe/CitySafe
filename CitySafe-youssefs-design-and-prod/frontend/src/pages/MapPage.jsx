@@ -1,20 +1,26 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import L from "leaflet";
+import "leaflet.markercluster/dist/MarkerCluster.css";
+import "leaflet.markercluster/dist/MarkerCluster.Default.css";
+import MarkerClusterGroup from "react-leaflet-markercluster";
 import {
   MapContainer, TileLayer, Marker, Popup,
   Circle, Polyline, useMap, useMapEvents
 } from "react-leaflet";
 import {
   ShieldCheck, AlertTriangle, Users, ThermometerSun,
-  Navigation, Plus, Siren, X, RefreshCw, Flame,
+  Navigation, Plus, Siren, X, RefreshCw, Flame, ExternalLink,
 } from "lucide-react";
-import { useNearbyReports } from "../hooks/useReports";
+import { useNearbyReports, useVerifyReport } from "../hooks/useReports";
 import { useAlertsFeed } from "../hooks/useAlerts";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { useNavigate } from "react-router-dom";
 import { renderToStaticMarkup } from "react-dom/server";
+import { useAuth } from "../contexts/AuthContext";
+import apiClient from "../lib/apiClient";
 
 /* ─────────────────────────────────────────────────────────────────────────────
    DivIcon factory — colored pins that always render (no broken image URLs)
@@ -167,7 +173,7 @@ function PanListener({ onPan }) {
 ───────────────────────────────────────────────────────────────────────────── */
 function HazardsLayer({ reports, onMarkerClick }) {
   return (
-    <>
+    <MarkerClusterGroup chunkedLoading>
       {reports.map((r) => (
         <Marker
           key={r.id}
@@ -175,9 +181,11 @@ function HazardsLayer({ reports, onMarkerClick }) {
           icon={makePin(r.type)}
           eventHandlers={{
             click: () => onMarkerClick("hazard", {
+              reportId: r.id,
               title: r.description,
               status: r.status,
               type: r.type,
+              location: r.location,
               time: new Date(r.createdAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }),
             }),
           }}
@@ -193,14 +201,77 @@ function HazardsLayer({ reports, onMarkerClick }) {
           </Popup>
         </Marker>
       ))}
-    </>
+    </MarkerClusterGroup>
+  );
+}
+
+function HazardSheet({ sheet, colors, reportId, mapsUrl, onClose }) {
+  const { user } = useAuth();
+  const { mutate: verify, isPending: verifying } = useVerifyReport();
+  const isAdmin = user?.role === "admin";
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-xl">{colors.emoji}</span>
+        <div className="text-sm font-semibold text-slate-800 capitalize">
+          {(sheet.payload?.type ?? "hazard").replace(/_/g, " ")}
+        </div>
+      </div>
+      <p className="text-base font-bold text-slate-900">{sheet.payload?.title}</p>
+      <p className="text-xs text-slate-400 mt-1">{sheet.payload?.time}</p>
+      <div className="mt-3"><Badge status={sheet.payload?.status} /></div>
+
+      {/* Google Maps navigation link */}
+      {mapsUrl && (
+        <a
+          href={mapsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-4 flex items-center gap-2 text-sm text-teal-600 hover:text-teal-700 font-semibold transition-colors"
+        >
+          <ExternalLink className="h-4 w-4" />
+          Navigate to location
+        </a>
+      )}
+
+      <div className="mt-5 flex gap-2">
+        {isAdmin && reportId && (
+          <Button
+            className="flex-1"
+            disabled={verifying || sheet.payload?.status !== "under_review"}
+            onClick={() => { verify(reportId); onClose(); }}
+          >
+            {verifying ? "Verifying…" : "Verify report"}
+          </Button>
+        )}
+        {!isAdmin && (
+          <Button className="flex-1" variant="secondary" onClick={onClose}>
+            Dismiss
+          </Button>
+        )}
+        <Button variant="secondary" onClick={onClose}>Close</Button>
+      </div>
+    </div>
   );
 }
 
 function CrowdsLayer({ onZoneClick }) {
+  const { data: liveCrowdZones = [], isLoading } = useQuery({
+    queryKey: ["crowd-density"],
+    queryFn: () => apiClient.get("/crowd-density").then((r) => r.data ?? r),
+    staleTime: 60_000,
+    retry: 1,
+  });
+
+  // Fall back to static mock zones if no live data (e.g. no recent reports in area)
+  const zones = liveCrowdZones.length > 0 ? liveCrowdZones : CROWD_ZONES;
+
+  if (isLoading) return null;
+
   return (
     <>
-      {CROWD_ZONES.map((z) => (
+      {zones.map((z) => (
         <Circle
           key={z.id}
           center={z.center}
@@ -211,7 +282,11 @@ function CrowdsLayer({ onZoneClick }) {
             dashArray: z.level === "Low" ? "8 8" : undefined,
           }}
           eventHandlers={{
-            click: () => onZoneClick("crowd", { title: `${z.level} crowd density`, level: z.level, note: z.note }),
+            click: () => onZoneClick("crowd", {
+              title: `${z.level} crowd density`,
+              level: z.level,
+              note: z.note + (liveCrowdZones.length > 0 ? ` (${z.count ?? "?"} recent reports)` : " (estimated)"),
+            }),
           }}
         />
       ))}
@@ -364,20 +439,18 @@ function SheetContent({ lens, sheet, setLens, onClose, navigate }) {
 
   if (sheet.type === "hazard") {
     const colors = TYPE_COLORS[sheet.payload?.type] ?? { bg: "#64748b", border: "#475569", emoji: "📍" };
+    const { reportId, location } = sheet.payload ?? {};
+    const mapsUrl = location?.lat
+      ? `https://www.google.com/maps/dir/?api=1&destination=${location.lat},${location.lon}`
+      : null;
     return (
-      <div>
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-xl">{colors.emoji}</span>
-          <div className="text-sm font-semibold text-slate-800 capitalize">{(sheet.payload?.type ?? "hazard").replace(/_/g, " ")}</div>
-        </div>
-        <p className="text-base font-bold text-slate-900">{sheet.payload?.title}</p>
-        <p className="text-xs text-slate-400 mt-1">{sheet.payload?.time}</p>
-        <div className="mt-3"><Badge status={sheet.payload?.status} /></div>
-        <div className="mt-5 flex gap-2">
-          <Button className="flex-1">Verify report</Button>
-          <Button variant="secondary">Report update</Button>
-        </div>
-      </div>
+      <HazardSheet
+        sheet={sheet}
+        colors={colors}
+        reportId={reportId}
+        mapsUrl={mapsUrl}
+        onClose={onClose}
+      />
     );
   }
 

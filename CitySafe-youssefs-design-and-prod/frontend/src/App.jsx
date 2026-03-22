@@ -9,6 +9,7 @@ import SettingsPage from "./pages/SettingsPage";
 import AuthPage from "./pages/AuthPage";
 import TermsPage from "./pages/TermsPage";
 import PrivacyPage from "./pages/PrivacyPage";
+import SearchPage from "./pages/SearchPage";
 import { Toaster } from "react-hot-toast";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -67,6 +68,7 @@ export default function App() {
                       <Route path="/sos" element={<ErrorBoundary><SosPage /></ErrorBoundary>} />
                       <Route path="/dashboard" element={<ErrorBoundary><DashboardPage /></ErrorBoundary>} />
                       <Route path="/settings" element={<ErrorBoundary><SettingsPage /></ErrorBoundary>} />
+                      <Route path="/search" element={<ErrorBoundary><SearchPage /></ErrorBoundary>} />
                       <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>
                   </Layout>

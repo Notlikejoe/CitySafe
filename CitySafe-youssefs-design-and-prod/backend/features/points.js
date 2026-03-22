@@ -1,125 +1,69 @@
-/**
- * CitySafe Points Module (CityPoints)
- *
- * Fixes applied (v2 audit):
- * #6 — all public exports wrapped in tryCatch().
- * #7 — schedulePersist() called after every ledger mutation.
- */
-
-import { store, POINTS_CONFIG, schedulePersist, insertUserEntity, userIndices } from "../store.js";
-import { generateId, getTimestamp, tryCatch, ok, err, log } from "../utils.js";
-import { issueVoucherIfEligible } from "./vouchers.js";
-
-const VALID_REASONS = Object.freeze([
-    "report_submitted",
-    "report_verified",
-    "sos_valid_usage",
-    "manual_admin_grant",
-    "voucher_deduction",
-]);
-
-// ─── Internal: Ensure User ────────────────────────────────────────────────────
-const ensureUser = (userId) => {
-    if (!store.users[userId]) {
-        store.users[userId] = {};
-    }
-};
-
-// ─── Balance (pure ledger sum) ────────────────────────────────────────────────
-export const getUserBalance = (userId) => tryCatch(() => {
-    if (!userId) return err("userId is required.");
-
-    const allEntries = store.pointsLedger.filter((e) => e.userId === userId);
-    const earned = allEntries.filter((e) => e.points > 0).reduce((s, e) => s + e.points, 0);
-    const deducted = allEntries.filter((e) => e.points < 0).reduce((s, e) => s + e.points, 0);
-    const balance = earned + deducted; // deducted is already negative
-
-    return ok({ userId, earned, deducted: Math.abs(deducted), balance });
-}, "points.getBalance");
+import { query } from "../db.js";
+import { tryCatch, ok, err, generateId, getTimestamp } from "../utils.js";
 
 // ─── Award Points ─────────────────────────────────────────────────────────────
-export const awardPoints = ({ userId, reason, referenceId, overrideAmount = null }) => tryCatch(() => {
-    if (!userId) return err("userId is required.");
-    if (!VALID_REASONS.includes(reason)) return err(`Invalid reason '${reason}'. Valid: [${VALID_REASONS.join(", ")}].`);
-    if (!referenceId) return err("referenceId is required to prevent duplicate rewards.");
-
-    const alreadyAwarded = store.pointsLedger.some(
-        (e) => e.referenceId === referenceId && e.reason === reason && e.userId === userId
-    );
-    if (alreadyAwarded) {
-        return err(`Points already awarded to '${userId}' for ${reason} on '${referenceId}'.`);
+export const awardPoints = async (params) => {
+    const { userId, reason } = params;
+    
+    // We get real ID if UUID
+    let uId = userId;
+    if (!userId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        const uRes = await query(`SELECT id FROM users WHERE username = $1`, [userId]);
+        if (uRes.data?.rows?.length > 0) uId = uRes.data.rows[0].id;
+        else return err("User not found");
     }
 
-    const pointMap = {
-        report_submitted: POINTS_CONFIG.REPORT_SUBMITTED,
-        report_verified: POINTS_CONFIG.REPORT_VERIFIED,
-        sos_valid_usage: POINTS_CONFIG.SOS_VALID_USAGE,
-        manual_admin_grant: overrideAmount ?? 0,
-        voucher_deduction: overrideAmount ?? 0,
-    };
-
-    const points = overrideAmount !== null ? overrideAmount : pointMap[reason];
-    if (typeof points !== "number" || points === 0) return err("Points amount must be a non-zero number.");
-
-    ensureUser(userId);
-
-    const entry = {
-        id: generateId(),
-        userId,
-        points,
-        reason,
-        referenceId,
-        timestamp: getTimestamp(),
-    };
-
-    store.pointsLedger.push(entry);
-    insertUserEntity(entry.userId, "points", entry);
-    schedulePersist();  // #7
-
-    log("info", "points.awarded", { userId, points, reason, referenceId });
-
-    if (points > 0) {
-        issueVoucherIfEligible(userId);
+    let amount = 0;
+    switch (reason) {
+        case "report_submitted": amount = 10; break;
+        case "report_verified": amount = 50; break;
+        case "sos_responded": amount = 100; break;
+        case "Welcome to CitySafe": amount = 50; break;
+        default: amount = 5;
     }
 
-    return ok(entry);
-}, "points.award");
+    const res = await query(`SELECT award_points($1, $2, $3)`, [uId, amount, reason]);
+    if (!res.success) return err(res.error);
+    
+    return ok({ amount, reason });
+};
 
-// ─── Deduct Points (negative ledger entry) ────────────────────────────────────
-export const deductPoints = (userId, amount, referenceId) => tryCatch(() => {
-    if (!userId) return err("userId is required.");
-    if (!referenceId) return err("referenceId is required for deductions.");
-    if (typeof amount !== "number" || amount <= 0) return err("amount must be a positive number.");
+// ─── Leaderboard ─────────────────────────────────────────────────────────────
+export const getPointsLeaderboard = async () => {
+    const res = await query(`
+        SELECT id as "userId", username as "displayName", points as "totalPoints"
+        FROM users 
+        ORDER BY points DESC 
+        LIMIT 10
+    `);
+    
+    if (!res.success) return err(res.error);
+    return ok({ topUsers: res.data.rows });
+};
 
-    ensureUser(userId);
-
-    const balanceResult = getUserBalance(userId);
-    if (!balanceResult.success) return balanceResult;
-    if (balanceResult.data.balance < amount) {
-        return err(`Insufficient balance. Available: ${balanceResult.data.balance}, Required: ${amount}.`);
+// ─── User Ledger ─────────────────────────────────────────────────────────────
+export const getUserLedger = async (userId) => {
+    let uId = userId;
+    if (!userId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        const uRes = await query(`SELECT id FROM users WHERE username = $1`, [userId]);
+        if (uRes.data?.rows?.length > 0) uId = uRes.data.rows[0].id;
     }
 
-    const entry = {
-        id: generateId(),
-        userId,
-        points: -amount,
-        reason: "voucher_deduction",
-        referenceId,
-        timestamp: getTimestamp(),
-    };
+    const [uRes, lRes] = await Promise.all([
+        query(`SELECT points FROM users WHERE id = $1`, [uId]),
+        query(`SELECT amount, reason, timestamp as "timestamp" FROM points_ledger WHERE user_id = $1 ORDER BY timestamp DESC LIMIT 50`, [uId])
+    ]);
 
-    store.pointsLedger.push(entry);
-    insertUserEntity(entry.userId, "points", entry);
-    schedulePersist();  // #7
+    if (!uRes.success || !lRes.success) return err("Failed to fetch ledger");
+    
+    return ok({
+        userId: uId,
+        totalPoints: uRes.data.rows[0]?.points || 0,
+        history: lRes.data.rows
+    });
+};
 
-    log("info", "points.deducted", { userId, amount, referenceId });
-    return ok({ userId, deducted: amount, newBalance: balanceResult.data.balance - amount });
-}, "points.deduct");
-
-// ─── Get Ledger ───────────────────────────────────────────────────────────────
-export const getUserPointsLedger = (userId) => tryCatch(() => {
-    if (!userId) return err("userId is required.");
-    const ledger = (userIndices.points.get(userId) || [])
-        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    return ok(ledger);
-}, "points.getLedger");
+// ─── Redeem Voucher ───────────────────────────────────────────────────────────
+export const redeemVoucher = async (userId, voucherId) => {
+    return err("Not implemented for Postgres yet");
+};

@@ -1,95 +1,47 @@
-/**
- * CitySafe Vouchers Module
- *
- * Fixes applied (v2 audit):
- * #6 — all public exports wrapped in tryCatch().
- * #7 — schedulePersist() called after every mutation.
- */
+import { query } from "../db.js";
+import { tryCatch, ok, err } from "../utils.js";
 
-import { store, POINTS_CONFIG, VOUCHER_CONFIG, schedulePersist, insertUserEntity, userIndices } from "../store.js";
-import { generateId, getTimestamp, addDays, tryCatch, ok, err, log } from "../utils.js";
-import { getUserBalance, deductPoints } from "./points.js";
-
-// ─── Internal: Atomically Issue Vouchers ─────────────────────────────────────
-export const issueVoucherIfEligible = (userId) => {
-    const balResult = getUserBalance(userId);
-    if (!balResult.success) return;
-
-    const { balance } = balResult.data;
-    if (balance < POINTS_CONFIG.VOUCHER_THRESHOLD) return;
-
-    const vouchersToIssue = Math.floor(balance / POINTS_CONFIG.VOUCHER_COST);
-    if (vouchersToIssue <= 0) return;
-
-    const totalCost = vouchersToIssue * POINTS_CONFIG.VOUCHER_COST;
-    const batchRefId = `voucher_batch_${generateId()}`;
-    const deductResult = deductPoints(userId, totalCost, batchRefId);
-    if (!deductResult.success) {
-        log("warn", "voucher.batch_deduction_failed", { userId, totalCost, reason: deductResult.error });
-        return;
-    }
-
-    for (let i = 0; i < vouchersToIssue; i++) {
-        _createVoucher(userId);
-    }
-    log("info", "voucher.batch_issued", { userId, count: vouchersToIssue, totalCost });
+// ─── Get Vouchers ─────────────────────────────────────────────────────────────
+export const getVouchers = async () => {
+    const res = await query(`SELECT id, code, sponsor, description, cost, available FROM vouchers ORDER BY cost ASC`);
+    if (!res.success) return err(res.error);
+    return ok(res.data.rows);
 };
 
-const _createVoucher = (userId) => {
-    const voucherId = generateId();
-    const voucher = {
-        id: voucherId,
-        userId,
-        code: `CSV-${voucherId.replace(/-/g, "").slice(0, 10).toUpperCase()}`,
-        issuedAt: getTimestamp(),
-        expiresAt: addDays(new Date(), VOUCHER_CONFIG.EXPIRY_DAYS),
-        redeemed: false,
-        redeemedAt: null,
-    };
-    store.vouchers.push(voucher);
-    insertUserEntity(userId, "vouchers", voucher);
-    schedulePersist();  // #7
-    return voucher;
+// ─── Redeem Voucher ───────────────────────────────────────────────────────────
+export const redeemVoucher = async (userId, voucherId) => {
+    let uId = userId;
+    if (!userId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        const uRes = await query(`SELECT id FROM users WHERE username = $1`, [userId]);
+        if (uRes.data?.rows?.length > 0) uId = uRes.data.rows[0].id;
+        else return err("User not found");
+    }
+
+    const vRes = await query(`SELECT cost, available FROM vouchers WHERE id = $1`, [voucherId]);
+    if (!vRes.success || vRes.data.rows.length === 0) return err("Voucher not found");
+    if (!vRes.data.rows[0].available) return err("Voucher is sold out");
+
+    const cost = vRes.data.rows[0].cost;
+
+    // Check user points
+    const pRes = await query(`SELECT points FROM users WHERE id = $1`, [uId]);
+    if (!pRes.success || pRes.data.rows.length === 0) return err("User not found");
+    
+    if (pRes.data.rows[0].points < cost) return err("Insufficient points");
+
+    // Execute redemption
+    const redeemStr = `
+        WITH deduction AS (
+            UPDATE users SET points = points - $2 WHERE id = $1 RETURNING id
+        ),
+        ledger_insert AS (
+            INSERT INTO points_ledger (user_id, amount, reason) VALUES ($1, -$2, 'Voucher Redemption')
+        )
+        INSERT INTO user_vouchers (user_id, voucher_id) VALUES ($1, $3) RETURNING id
+    `;
+    
+    const rRes = await query(redeemStr, [uId, cost, voucherId]);
+    if (!rRes.success) return err(rRes.error);
+    
+    return ok({ voucherId, cost });
 };
-
-// ─── Redeem Voucher (idempotent) ──────────────────────────────────────────────
-export const redeemVoucher = (voucherCode, userId) => tryCatch(() => {
-    if (!voucherCode) return err("voucherCode is required.");
-    if (!userId) return err("userId is required.");
-
-    const voucher = store.vouchers.find(
-        (v) => (v.code === voucherCode || v.id === voucherCode) && v.userId === userId
-    );
-    if (!voucher) return err(`Voucher '${voucherCode}' not found for user '${userId}'.`);
-
-    // Idempotent: same user re-redeems → success with existing state
-    if (voucher.redeemed) {
-        log("info", "voucher.redeem_noop", { userId, voucherCode, redeemedAt: voucher.redeemedAt });
-        return ok(voucher);
-    }
-
-    if (new Date(voucher.expiresAt) < new Date()) {
-        return err(`Voucher '${voucherCode}' expired on ${voucher.expiresAt}.`);
-    }
-
-    voucher.redeemed = true;
-    voucher.redeemedAt = getTimestamp();
-    schedulePersist();  // #7
-
-    log("info", "voucher.redeemed", { userId, voucherCode, redeemedAt: voucher.redeemedAt });
-    return ok(voucher);
-}, "vouchers.redeem");
-
-// ─── Get User Vouchers ────────────────────────────────────────────────────────
-export const getUserVouchers = (userId, filters = {}) => tryCatch(() => {
-    if (!userId) return err("userId is required.");
-
-    let vouchers = (userIndices.vouchers.get(userId) || []);
-
-    if (filters.activeOnly) {
-        const now = new Date();
-        vouchers = vouchers.filter((v) => !v.redeemed && new Date(v.expiresAt) >= now);
-    }
-    vouchers.sort((a, b) => new Date(b.issuedAt) - new Date(a.issuedAt));
-    return ok(vouchers);
-}, "vouchers.getUserVouchers");

@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   FileWarning, Siren, Ticket, ChevronRight,
   Clock, Shield, BadgeCheck, TrendingUp, Star,
-  AlertCircle, X, MapPin, Calendar, Tag,
+  AlertCircle, X, MapPin, Calendar, Tag, ExternalLink,
 } from "lucide-react";
 import { useHistory } from "../hooks/useHistory";
 import { usePoints } from "../hooks/usePoints";
@@ -74,6 +74,7 @@ function useGreeting(name) {
 
 // ─── Event Detail Modal ────────────────────────────────────────────────────────
 function EventDetailModal({ event, onClose }) {
+  const navigate = useNavigate();
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", handler);
@@ -130,13 +131,19 @@ function EventDetailModal({ event, onClose }) {
             </div>
           )}
 
-          {/* Coordinates */}
+          {/* Coordinates + Google Maps link */}
           {event.location?.lat && (
             <div className="flex items-center gap-2 text-sm text-slate-500">
               <MapPin className="h-3.5 w-3.5 text-slate-400 shrink-0" />
-              <span className="font-mono text-xs">
-                {event.location.lat.toFixed(5)}, {event.location.lon?.toFixed(5) ?? event.location.lng?.toFixed(5)}
-              </span>
+              <a
+                href={`https://www.google.com/maps/dir/?api=1&destination=${event.location.lat},${event.location.lon ?? event.location.lng}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-xs text-teal-600 hover:text-teal-700 flex items-center gap-1 transition-colors"
+              >
+                {event.location.lat.toFixed(5)}, {(event.location.lon ?? event.location.lng)?.toFixed(5)}
+                <ExternalLink className="h-3 w-3" />
+              </a>
             </div>
           )}
 
@@ -159,10 +166,28 @@ function EventDetailModal({ event, onClose }) {
         </div>
 
         {/* Footer */}
-        <div className="px-5 pb-5">
+        <div className="px-5 pb-5 flex gap-2">
+          {/* SOS: navigate to SOS status page */}
+          {event._type === "sos" && event.id && (
+            <button
+              onClick={() => { onClose(); navigate("/sos"); }}
+              className="flex-1 rounded-2xl bg-red-600 text-white text-sm font-bold py-3 hover:bg-red-700 transition-colors"
+            >
+              View SOS Status
+            </button>
+          )}
+          {/* Report: navigate to map view */}
+          {event._type === "report" && event.id && (
+            <button
+              onClick={() => { onClose(); navigate("/map"); }}
+              className="flex-1 rounded-2xl bg-sky-600 text-white text-sm font-bold py-3 hover:bg-sky-700 transition-colors"
+            >
+              View on Map
+            </button>
+          )}
           <button
             onClick={onClose}
-            className="w-full rounded-2xl bg-slate-900 text-white text-sm font-bold py-3 hover:bg-slate-700 transition-colors"
+            className="flex-1 rounded-2xl bg-slate-900 text-white text-sm font-bold py-3 hover:bg-slate-700 transition-colors"
           >
             Close
           </button>

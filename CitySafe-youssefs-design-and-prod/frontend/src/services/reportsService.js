@@ -15,4 +15,16 @@ export const reportsService = {
 
     getByUser: (userId) =>
         client.get(`/users/${userId}/reports`),
+
+    // Admin: verify a report
+    verify: (id) =>
+        client.post(`/reports/${id}/verify`, {}),
+
+    // Admin: reject a report
+    reject: (id) =>
+        client.post(`/reports/${id}/reject`, {}),
+
+    // Owner: cancel a report
+    cancel: (id) =>
+        client.delete(`/reports/${id}/cancel`),
 };

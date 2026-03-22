@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { MapPin, FileWarning, Camera, ChevronRight, CheckCircle, Loader2, AlertCircle } from "lucide-react";
-import { useCreateReport } from "../hooks/useReports";
+import { MapPin, FileWarning, Camera, ChevronRight, CheckCircle, Loader2, AlertCircle, Trash2 } from "lucide-react";
+import { useCreateReport, useCancelReport } from "../hooks/useReports";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { useOfflineQueue } from "../hooks/useOfflineQueue";
@@ -21,6 +21,7 @@ const REPORT_TYPES = [
 export default function ReportPage() {
   const navigate = useNavigate();
   const { mutate: createReport, isPending } = useCreateReport();
+  const { mutate: cancelReport, isPending: cancelling } = useCancelReport();
   const { submitOrQueue } = useOfflineQueue();
   const { location, error: geoError, loading: geoLoading } = useGeolocation();
 
@@ -56,6 +57,18 @@ export default function ReportPage() {
   };
 
   if (submitted) {
+    const handleRetract = () => {
+      if (!window.confirm("Are you sure you want to retract this report? This cannot be undone.")) return;
+      cancelReport(submitted.id, {
+        onSuccess: () => {
+          setSubmitted(null);
+          setType("");
+          setDescription("");
+          setImageRef("");
+        },
+      });
+    };
+
     return (
       <div className="max-w-lg mx-auto py-12 px-4 animate-fade-up">
         <div className="flex flex-col items-center text-center">
@@ -88,6 +101,18 @@ export default function ReportPage() {
             >
               Report another issue
             </Button>
+            {/* Retract button — only visible while status is under_review */}
+            {submitted.status === "under_review" && (
+              <Button
+                variant="ghost"
+                className="w-full text-red-500 hover:bg-red-50 hover:text-red-600"
+                loading={cancelling}
+                onClick={handleRetract}
+              >
+                <Trash2 className="h-4 w-4" />
+                Retract this report
+              </Button>
+            )}
           </div>
         </div>
       </div>

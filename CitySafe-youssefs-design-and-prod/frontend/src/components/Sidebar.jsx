@@ -84,8 +84,9 @@ export default function Sidebar({ mobile = false, collapsed = false, onToggleCol
                 placeholder="Search area…"
                 className="bg-transparent outline-none w-full text-slate-700 placeholder-slate-400 text-sm"
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && e.target.value.trim()) {
-                    toast("🗺️ Map search coming soon!", { duration: 2500 });
+                  if (e.key === "Enter" && e.target.value.trim().length >= 2) {
+                    navigate(`/search?q=${encodeURIComponent(e.target.value.trim())}`);
+                    e.target.blur();
                   }
                 }}
               />

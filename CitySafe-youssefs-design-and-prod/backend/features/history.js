@@ -1,84 +1,96 @@
-/**
- * CitySafe User History Module
- *
- * Features:
- * - Unified history response per user
- * - Chronological sorting
- * - Filter by type
- * - Pagination
- */
-
-import { store, userIndices } from "../store.js";
-import { ok, err, paginate } from "../utils.js";
-import { getUserBalance } from "./points.js";
-import { getUserVouchers } from "./vouchers.js";
+import { query } from "../db.js";
+import { ok, err } from "../utils.js";
 
 const VALID_TYPES = ["report", "sos", "point", "voucher"];
 
-// ─── Get Unified History ──────────────────────────────────────────────
+export const getUserHistory = async (userId, options = {}) => {
+    const { type, page = 1 } = options;
+    const limit = 50;
+    const offset = (page - 1) * limit;
 
-/**
- * Returns a unified, chronological history for a user.
- * @param {string} userId
- * @param {object} [options]
- * @param {string} [options.type] - Filter: "report" | "sos" | "point" | "voucher"
- * @param {number} [options.page] - Page number (1-indexed)
- * @param {number} [options.pageSize] - Items per page
- */
-export const getUserHistory = (userId, { type = null, page = 1, pageSize = 20 } = {}) => {
     if (!userId) return err("userId is required.");
     if (type && !VALID_TYPES.includes(type)) {
-        return err(`Invalid type filter '${type}'. Valid: [${VALID_TYPES.join(", ")}].`);
-    }
-    if (!Number.isInteger(page) || page < 1) return err("page must be a positive integer.");
-    if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
-        return err("pageSize must be an integer between 1 and 100.");
+        return err(`Invalid type filter '${type}'`);
     }
 
-    let events = [];
+    let uId = userId;
+    if (!userId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        const uRes = await query(`SELECT id FROM users WHERE username = $1`, [userId]);
+        if (uRes.data?.rows?.length > 0) uId = uRes.data.rows[0].id;
+        else return err("User not found");
+    }
 
-    // Reports
+    // For a unified history, we UNION ALL the relevant tables
+    // We return a generic structure: id, _type, _timestamp, and a JSON payload for specific data
+    let parts = [];
+
     if (!type || type === "report") {
-        const reports = (userIndices.reports.get(userId) || [])
-            .map((r) => ({ _type: "report", _timestamp: r.createdAt, ...r }));
-        events.push(...reports);
+        parts.push(`
+            SELECT id::text, 'report' as _type, created_at as _timestamp, 
+                   json_build_object('type', type, 'description', description, 'status', status) as data
+            FROM reports WHERE author_id = $1
+        `);
     }
-
-    // SOS
     if (!type || type === "sos") {
-        const sos = (userIndices.sos.get(userId) || [])
-            .map((s) => ({ _type: "sos", _timestamp: s.createdAt, ...s }));
-        events.push(...sos);
+        parts.push(`
+            SELECT id::text, 'sos' as _type, created_at as _timestamp, 
+                   json_build_object('type', type, 'urgency', urgency, 'status', status) as data
+            FROM sos_requests WHERE requester_id = $1
+        `);
     }
-
-    // Points
     if (!type || type === "point") {
-        const points = (userIndices.points.get(userId) || [])
-            .map((p) => ({ _type: "point", _timestamp: p.timestamp, ...p }));
-        events.push(...points);
+        parts.push(`
+            SELECT id::text, 'point' as _type, timestamp as _timestamp, 
+                   json_build_object('amount', amount, 'reason', reason) as data
+            FROM points_ledger WHERE user_id = $1
+        `);
     }
-
-    // Vouchers
     if (!type || type === "voucher") {
-        const vouchers = (userIndices.vouchers.get(userId) || [])
-            .map((v) => ({ _type: "voucher", _timestamp: v.issuedAt, ...v }));
-        events.push(...vouchers);
+        parts.push(`
+            SELECT uv.id::text, 'voucher' as _type, uv.redeemed_at as _timestamp, 
+                   json_build_object('code', v.code, 'sponsor', v.sponsor) as data
+            FROM user_vouchers uv
+            JOIN vouchers v ON uv.voucher_id = v.id
+            WHERE uv.user_id = $1
+        `);
     }
 
-    // Sort chronologically (newest first)
-    events.sort((a, b) => new Date(b._timestamp) - new Date(a._timestamp));
+    if (parts.length === 0) return ok({ items: [], page, pageSize: limit, summary: {} });
 
-    const paged = paginate(events, page, pageSize);
-    const balResult = getUserBalance(userId);
-    const vouchersResult = getUserVouchers(userId, { activeOnly: true });
+    const sql = `
+        WITH combined AS (
+            ${parts.join("\nUNION ALL\n")}
+        )
+        SELECT * FROM combined
+        ORDER BY _timestamp DESC
+        LIMIT $2 OFFSET $3
+    `;
 
-    return ok({
-        ...paged,
-        summary: {
-            totalReports: (userIndices.reports.get(userId) || []).length,
-            totalSos: (userIndices.sos.get(userId) || []).length,
-            pointBalance: balResult.success ? balResult.data.balance : 0,
-            activeVouchers: vouchersResult.success ? vouchersResult.data.length : 0,
-        },
-    });
+    const res = await query(sql, [uId, limit, offset]);
+    if (!res.success) return err(res.error);
+
+    const items = res.data.rows.map(r => ({
+        id: r.id,
+        _type: r._type,
+        _timestamp: r._timestamp,
+        ...r.data
+    }));
+
+    // Fetch summary stats
+    const statsStr = `
+        SELECT 
+            (SELECT COUNT(*) FROM reports WHERE author_id = $1) as reports,
+            (SELECT COUNT(*) FROM sos_requests WHERE requester_id = $1) as sos,
+            (SELECT points FROM users WHERE id = $1) as points,
+            (SELECT COUNT(*) FROM user_vouchers WHERE user_id = $1) as vouchers
+    `;
+    const statsRes = await query(statsStr, [uId]);
+    const summary = statsRes.success && statsRes.data.rows.length > 0 ? {
+        totalReports: parseInt(statsRes.data.rows[0].reports),
+        totalSos: parseInt(statsRes.data.rows[0].sos),
+        pointBalance: parseInt(statsRes.data.rows[0].points),
+        activeVouchers: parseInt(statsRes.data.rows[0].vouchers)
+    } : {};
+
+    return ok({ items, page, pageSize: limit, summary });
 };

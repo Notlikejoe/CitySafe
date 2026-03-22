@@ -7,44 +7,42 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // On mount: decode token from localStorage and set user
+  // On mount: verify session against server via the HTTPOnly cookie
   useEffect(() => {
-    const token = localStorage.getItem("cs_token");
-    if (token) {
-      try {
-        // JWT payload is base64url encoded in the second segment
-        const payload = JSON.parse(atob(token.split(".")[1]));
-        setUser({ userId: payload.userId, role: payload.role });
-      } catch {
-        localStorage.removeItem("cs_token");
-      }
-    }
-    setLoading(false);
+    client.get("/auth/me")
+      .then((res) => {
+        const data = res.data ?? res;
+        setUser({ userId: data.userId, role: data.role, displayName: data.displayName });
+      })
+      .catch(() => {
+        // Cookie is missing or invalid — user is not logged in
+        setUser(null);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   const login = useCallback(async (userId, password) => {
     const res = await client.post("/auth/login", { userId, password });
-    const token = res.data?.token ?? res.token;
-    localStorage.setItem("cs_token", token);
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    setUser({ userId: payload.userId, role: payload.role });
-    return res.data;
+    const { userId: uid, role, displayName } = res.data ?? res;
+    setUser({ userId: uid, role, displayName });
+    return res.data ?? res;
   }, []);
 
   const register = useCallback(async (userId, password, displayName) => {
     const res = await client.post("/auth/register", { userId, password, displayName });
-    const token = res.data?.token ?? res.token;
-    if (token) {
-      localStorage.setItem("cs_token", token);
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      setUser({ userId: payload.userId, role: payload.role });
-    }
-    return res.data;
+    const { userId: uid, role, displayName: dName } = res.data ?? res;
+    setUser({ userId: uid, role, displayName: dName });
+    return res.data ?? res;
   }, []);
 
-  const logout = useCallback(() => {
-    localStorage.removeItem("cs_token");
-    setUser(null);
+  const logout = useCallback(async () => {
+    try {
+      await client.post("/auth/logout");
+    } catch (e) {
+      console.error("Logout failed", e);
+    } finally {
+      setUser(null);
+    }
   }, []);
 
   return (

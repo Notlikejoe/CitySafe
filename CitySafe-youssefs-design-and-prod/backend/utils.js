@@ -4,6 +4,7 @@
 
 import { randomUUID } from "crypto";
 import { readFileSync, writeFileSync, existsSync, renameSync } from "fs";
+import he from "he";
 export { readFileSync, writeFileSync, existsSync, renameSync };
 
 // ─── ID Generation ────────────────────────────────────────────────────────────
@@ -41,16 +42,18 @@ export const addDays = (fromDate, days) => {
 export const minutesBetween = (earlier, later) =>
     (new Date(later) - new Date(earlier)) / 60_000;
 
-// ─── Input Sanitization — Fix #5 ─────────────────────────────────────────────
+// ─── Input Sanitization ───────────────────────────────────────────────────────
 /**
- * Strips HTML/script tags from user-supplied strings to prevent XSS.
+ * Encodes HTML special characters in user-supplied strings to prevent XSS.
+ * Uses `he.escape()` which handles all vectors including attribute injection
+ * (e.g. onerror="…", javascript: URIs) — unlike naive regex tag strippers.
  * Also collapses consecutive whitespace to a single space.
  * @param {string} str
  * @returns {string}
  */
 export const sanitize = (str) =>
     typeof str === "string"
-        ? str.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim()
+        ? he.escape(str.replace(/\s+/g, " ").trim())
         : "";
 
 // ─── Spatial Grid Index — Fix #2 ─────────────────────────────────────────────

@@ -12,4 +12,8 @@ export const sosService = {
 
     getByUser: (userId) =>
         client.get(`/users/${userId}/sos`),
+
+    // Owner: cancel a pending SOS request
+    cancel: (id) =>
+        client.patch(`/sos/${id}/status`, { status: "cancelled" }),
 };

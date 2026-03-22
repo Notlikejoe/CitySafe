@@ -1,143 +1,107 @@
-/**
- * CitySafe SOS Module
- *
- * Fixes applied (v2 audit):
- * #3 — bumpVersion() on every status transition.
- * #5 — description sanitized (HTML stripped).
- * #6 — all public exports wrapped in tryCatch().
- * #7 — schedulePersist() called after every mutation.
- */
-
-import { store, insertUserEntity, SOS_STATUS, SOS_TRANSITIONS, SOS_TYPE, SOS_URGENCY, SOS_THROTTLE_CONFIG, bumpVersion, schedulePersist } from "../store.js";
-import { generateId, getTimestamp, isValidLocation, isValidEnum, minutesBetween, sanitize, validateFields, tryCatch, ok, err, log } from "../utils.js";
-import { awardPoints } from "./points.js";
-
-// ─── Throttle Check ───────────────────────────────────────────────────────────
-const checkThrottle = (userId, sosType) => {
-    const userSos = store.sosRequests.filter((s) => s.userId === userId);
-
-    const active = userSos.find((s) =>
-        [SOS_STATUS.PENDING, SOS_STATUS.ACCEPTED, SOS_STATUS.IN_PROGRESS].includes(s.status)
-    );
-    if (active) {
-        log("warn", "sos.throttle_active", { userId, activeId: active.id, activeStatus: active.status });
-        return err(`You already have an active SOS request (ID: ${active.id}, status: ${active.status}). Only ${SOS_THROTTLE_CONFIG.MAX_ACTIVE_PER_USER} active SOS allowed.`);
-    }
-
-    const isMedical = sosType === SOS_TYPE.MEDICAL;
-    if (!(isMedical && SOS_THROTTLE_CONFIG.EMERGENCY_BYPASS_COOLDOWN)) {
-        const lastResolved = userSos
-            .filter((s) => [SOS_STATUS.RESOLVED, SOS_STATUS.CANCELLED].includes(s.status))
-            .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))[0];
-
-        if (lastResolved) {
-            const minutesSince = minutesBetween(lastResolved.updatedAt, getTimestamp());
-            if (minutesSince < SOS_THROTTLE_CONFIG.COOLDOWN_MINUTES) {
-                const remaining = Math.ceil(SOS_THROTTLE_CONFIG.COOLDOWN_MINUTES - minutesSince);
-                log("warn", "sos.throttle_cooldown", { userId, remainingMinutes: remaining });
-                return err(`SOS cooldown active. Please wait ${remaining} more minute(s).`);
-            }
-        }
-    }
-    return null;
-};
+import { query } from "../db.js";
+import { tryCatch, ok, err, log, generateId } from "../utils.js";
 
 // ─── Create SOS ───────────────────────────────────────────────────────────────
-export const createSos = (params) => tryCatch(() => {
-    const { userId, type, location, urgency } = params;
-    const description = sanitize(params.description ?? "");
+export const createSosRequest = async (userId, payload) => {
+    const { type, urgency, location, description } = payload;
+    if (!type || !urgency || !location?.lat || !location?.lon) {
+        return err("Type, urgency, lat, and lon are required.");
+    }
+    
+    const sql = `
+        INSERT INTO sos_requests (requester_id, type, urgency, description, location)
+        VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326))
+        RETURNING id, requester_id as "requesterId", type, urgency, description, status, created_at as "createdAt", 
+                  ST_X(location::geometry) as lon, ST_Y(location::geometry) as lat;
+    `;
+    
+    let reqId = userId;
+    if (!userId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        const uRes = await query(`SELECT id FROM users WHERE username = $1`, [userId]);
+        if (uRes.data?.rows?.length > 0) reqId = uRes.data.rows[0].id;
+    }
 
-    // Fix #3 — unified schema check
-    const schemaErr = validateFields({
-        userId: { value: userId, min: 1, max: 100 },
-        description: { value: description, min: 0, max: 1000, required: false },
-    });
-    if (schemaErr) return schemaErr;
-
-    if (!isValidEnum(type, SOS_TYPE)) return err(`Invalid SOS type. Valid types: ${Object.values(SOS_TYPE).join(", ")}`);
-    if (!isValidLocation(location)) return err("A valid location { lat, lon } is required.");
-    if (!isValidEnum(urgency, SOS_URGENCY)) return err(`Invalid urgency. Valid: ${Object.values(SOS_URGENCY).join(", ")}`);
-
-    const throttleError = checkThrottle(userId, type);
-    if (throttleError) return throttleError;
-
+    const res = await query(sql, [reqId, type, urgency, description, location.lon, location.lat]);
+    if (!res.success) return err(res.error);
+    
+    const row = res.data.rows[0];
     const sos = {
-        id: generateId(),
-        userId,
-        type,
-        location,
-        urgency,
-        description,
-        status: SOS_STATUS.PENDING,
-        version: 1,   // #3
-        statusHistory: [
-            { from: null, to: SOS_STATUS.PENDING, at: getTimestamp(), by: userId }
-        ],
-        createdAt: getTimestamp(),
-        updatedAt: getTimestamp(),
+        ...row,
+        location: { lat: row.lat, lon: row.lon }
     };
 
-    store.sosRequests.push(sos);
-    insertUserEntity(sos.userId, "sos", sos);
-    schedulePersist();  // #7
-    log("info", "sos.created", { sosId: sos.id, userId, type, urgency, location });
+    log("info", "sos.created", { sosId: sos.id, userId, type, urgency });
     return ok(sos);
-}, "sos.create");
+};
 
-// ─── Transition SOS Status ────────────────────────────────────────────────────
-/**
- * Fix #2 — Optimistic locking: pass expectedVersion to guard against
- * concurrent mutations between your read and this write.
- *
- * @param {string} sosId
- * @param {string} newStatus
- * @param {string} actorId
- * @param {number|null} [expectedVersion=null]
- */
-export const transitionSosStatus = (sosId, newStatus, actorId, expectedVersion = null) => tryCatch(() => {
-    if (!actorId) return err("actorId is required.");
+// ─── Transition Status ────────────────────────────────────────────────────────
+export const updateSosStatus = async (sosId, newStatus) => {
+    const valid = ["pending", "under_review", "resolved", "cancelled"];
+    if (!valid.includes(newStatus)) return err("Invalid status");
+    
+    const res = await query(
+        `UPDATE sos_requests SET status = $1 WHERE id = $2 RETURNING id, status`,
+        [newStatus, sosId]
+    );
+    
+    if (!res.success) return err(res.error);
+    if (res.data.rowCount === 0) return err("SOS request not found", 404);
+    
+    return ok(res.data.rows[0]);
+};
 
-    const sos = store.sosRequests.find((s) => s.id === sosId);
-    if (!sos) return err(`SOS '${sosId}' not found.`);
-    if (!isValidEnum(newStatus, SOS_STATUS)) return err(`Invalid target status: '${newStatus}'.`);
+// ─── Get Active SOS ───────────────────────────────────────────────────────────
+export const getActiveSosRequests = async (lat, lon, radiusKm = 10, page = 1) => {
+    const radiusMeters = radiusKm * 1000;
+    
+    const sql = `
+        SELECT id, requester_id as "requesterId", type, urgency, description, status, created_at as "createdAt",
+               ST_X(location::geometry) as lon, ST_Y(location::geometry) as lat,
+               ST_Distance(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) as distance_m
+        FROM sos_requests
+        WHERE status IN ('pending', 'under_review')
+          AND ST_DWithin(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
+        ORDER BY 
+            CASE urgency WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+            created_at DESC
+        LIMIT $4 OFFSET $5
+    `;
+    
+    const res = await query(sql, [lon, lat, radiusMeters, 50, (page - 1) * 50]);
+    if (!res.success) return err(res.error);
+    
+    const items = res.data.rows.map(r => ({
+        ...r,
+        location: { lat: r.lat, lon: r.lon }
+    }));
+    
+    return ok({ items, page, pageSize: 50 });
+};
 
-    // Fix #2 — Optimistic version check
-    if (expectedVersion !== null && sos.version !== expectedVersion) {
-        return err(
-            `Version conflict on SOS '${sosId}': expected v${expectedVersion} but current is v${sos.version}. Re-fetch and retry.`
-        );
+// ─── Get SOS By User ──────────────────────────────────────────────────────────
+export const getSosRequestsByUser = async (userId, page = 1) => {
+    let reqId = userId;
+    if (!userId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        const uRes = await query(`SELECT id FROM users WHERE username = $1`, [userId]);
+        if (uRes.data?.rows?.length > 0) reqId = uRes.data.rows[0].id;
     }
-
-    const allowed = SOS_TRANSITIONS[sos.status];
-    if (!allowed.includes(newStatus)) {
-        return err(`Cannot transition SOS from '${sos.status}' to '${newStatus}'. Allowed: [${allowed.join(", ") || "none"}].`);
-    }
-
-    const prev = sos.status;
-    sos.status = newStatus;
-    sos.updatedAt = getTimestamp();
-    sos.statusHistory.push({ from: prev, to: newStatus, at: sos.updatedAt, by: actorId });
-    bumpVersion(sos);   // #3
-    schedulePersist();  // #7
-
-    log("info", "sos.status_changed", { sosId, from: prev, to: newStatus, actorId, version: sos.version });
-
-    if (newStatus === SOS_STATUS.RESOLVED) {
-        awardPoints({ userId: sos.userId, reason: "sos_valid_usage", referenceId: sos.id });
-    }
-
-    return ok(sos);
-}, "sos.transition");
-
-// ─── Get SOS History ──────────────────────────────────────────────────────────
-export const getUserSosHistory = (userId, statusFilter = null) => tryCatch(() => {
-    if (!userId) return err("userId is required.");
-
-    let results = store.sosRequests.filter((s) => s.userId === userId);
-    if (statusFilter) {
-        if (!isValidEnum(statusFilter, SOS_STATUS)) return err(`Invalid status filter: '${statusFilter}'.`);
-        results = results.filter((s) => s.status === statusFilter);
-    }
-    results.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    return ok(results);
-}, "sos.getHistory");
+    
+    const sql = `
+        SELECT id, requester_id as "requesterId", type, urgency, description, status, created_at as "createdAt",
+               ST_X(location::geometry) as lon, ST_Y(location::geometry) as lat
+        FROM sos_requests
+        WHERE requester_id = $1
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+    `;
+    
+    const res = await query(sql, [reqId, 50, (page - 1) * 50]);
+    if (!res.success) return err(res.error);
+    
+    const items = res.data.rows.map(r => ({
+        ...r,
+        location: { lat: r.lat, lon: r.lon }
+    }));
+    
+    return ok({ items, page, pageSize: 50, totalPages: Math.ceil(items.length / 50) });
+};
