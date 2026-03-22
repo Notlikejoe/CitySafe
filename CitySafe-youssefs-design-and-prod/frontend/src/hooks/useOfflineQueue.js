@@ -105,7 +105,7 @@ export function useOfflineQueue() {
 
     /** Enqueue a submission when offline; returns true if queued, false if online (should submit directly). */
     const submitOrQueue = useCallback(async (type, payload) => {
-        if (navigator.onLine) return false; // caller should submit normally
+        return false; // Force immediate submission to avoid false-offline reports in some browsers/dev environments
 
         if (!dbRef.current) {
             toast.error("Cannot queue: storage unavailable. Connect to internet and retry.");

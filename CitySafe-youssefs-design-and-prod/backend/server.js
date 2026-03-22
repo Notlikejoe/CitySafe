@@ -37,7 +37,6 @@ import { getVouchers, redeemVoucher } from "./features/vouchers.js";
 import { getUserHistory } from "./features/history.js";
 import { getCrowdZones } from "./features/crowd.js";
 import { searchContent } from "./features/search.js";
-import { query } from "./db.js";
 import { log } from "./utils.js";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -277,11 +276,10 @@ app.get("/api/reports", requireAuth, async (req, res) => {
     return res.json([]);
 });
 
-app.post("/api/reports", requireAuth, upload.single("image"), (req, res) => {
+app.post("/api/reports", requireAuth, upload.single("image"), async (req, res) => {
     const body = req.body;
     const imageRef = req.file ? `/uploads/${req.file.filename}` : (body.imageRef ?? null);
-    const result = createReport({
-        userId: req.user.userId,
+    const result = await createReport(req.user.userId, {
         location: body.location ? (typeof body.location === "string" ? JSON.parse(body.location) : body.location) : null,
         type: body.type,
         description: body.description,
@@ -298,25 +296,25 @@ app.get("/api/reports/:id", requireAuth, async (req, res) => {
     return res.json(q.data.rows[0]);
 });
 
-app.patch("/api/reports/:id/status", requireAuth, requireAdmin, (req, res) => {
+app.patch("/api/reports/:id/status", requireAuth, requireAdmin, async (req, res) => {
     const { status, expectedVersion } = req.body;
-    const result = transitionReportStatus(req.params.id, status, req.user.userId, expectedVersion ?? null);
+    const result = await transitionReportStatus(req.params.id, status, req.user.userId, expectedVersion ?? null);
     return send(res, result);
 });
 
-app.post("/api/reports/:id/verify", requireAuth, requireAdmin, (req, res) => {
-    const result = adminVerifyReport(req.params.id, req.user.userId);
+app.post("/api/reports/:id/verify", requireAuth, requireAdmin, async (req, res) => {
+    const result = await adminVerifyReport(req.params.id, req.user.userId);
     if (result.success) req.app.get("io").emit("report:verified", result.data);
     return send(res, result);
 });
 
-app.post("/api/reports/:id/reject", requireAuth, requireAdmin, (req, res) => {
-    const result = adminRejectReport(req.params.id, req.user.userId);
+app.post("/api/reports/:id/reject", requireAuth, requireAdmin, async (req, res) => {
+    const result = await adminRejectReport(req.params.id, req.user.userId);
     return send(res, result);
 });
 
-app.delete("/api/reports/:id/cancel", requireAuth, (req, res) => {
-    const result = cancelReport(req.params.id, req.user.userId);
+app.delete("/api/reports/:id/cancel", requireAuth, async (req, res) => {
+    const result = await cancelReport(req.params.id, req.user.userId);
     return send(res, result);
 });
 

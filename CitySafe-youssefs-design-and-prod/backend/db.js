@@ -13,7 +13,10 @@ let pool;
 if (connectionString) {
     pool = new Pool({
         connectionString,
-        ssl: { rejectUnauthorized: false } // Required for Supabase connections sometimes from local
+        // Only use SSL if explicitly required or not on localhost
+        ssl: (connectionString.includes('localhost') || connectionString.includes('127.0.0.1')) 
+             ? false 
+             : { rejectUnauthorized: false }
     });
 
     pool.on('error', (e) => {
@@ -46,4 +49,5 @@ export const getClient = () => {
     return pool.connect();
 };
 
+export { pool };
 export default { query, getClient, pool };

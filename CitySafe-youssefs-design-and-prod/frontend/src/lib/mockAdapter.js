@@ -472,7 +472,24 @@ const settingsHandlers = {
     },
 };
 
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+const authHandlers = {
+    "POST /auth/register": async ({ data }) => {
+        await delay();
+        return wrap({ userId: data.userId, role: "user", displayName: data.displayName || data.userId, token: "mock_token" });
+    },
+    "POST /auth/login": async ({ data }) => {
+        await delay();
+        return wrap({ userId: data.userId, role: "user", displayName: "Demo User", token: "mock_token" });
+    },
+    "GET /auth/me": async () => {
+        await delay(200);
+        return wrap({ userId: "user_demo", role: "user", displayName: "Demo User" });
+    },
+};
+
 const allHandlers = {
+    ...authHandlers,
     ...reportsHandlers, ...alertsHandlers, ...sosHandlers,
     ...historyHandlers, ...pointsHandlers, ...vouchersHandlers,
     ...settingsHandlers,

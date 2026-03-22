@@ -31,10 +31,14 @@ export default function ReportPage() {
   const [submitted, setSubmitted] = useState(null);
   const [errors, setErrors] = useState({});
 
+  const EMERGENCY_TYPES = ["fire", "crime"];
+
   const validate = () => {
     const e = {};
     if (!type) e.type = "Please select a report type.";
-    if (description.trim().length < 10) e.description = "Please enter at least 10 characters.";
+    const minChars = EMERGENCY_TYPES.includes(type) ? 0 : 3;
+    if (description.trim().length < minChars)
+      e.description = `Please enter at least ${minChars} characters.`;
     return e;
   };
 
@@ -229,7 +233,7 @@ export default function ReportPage() {
           className="w-full"
           size="lg"
           loading={isPending}
-          disabled={isPending || geoLoading || !!geoError}
+          disabled={isPending}
         >
           {isPending ? "Submitting…" : "Submit Report"}
         </Button>

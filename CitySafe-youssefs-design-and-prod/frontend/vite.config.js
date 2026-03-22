@@ -31,7 +31,7 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         runtimeCaching: [
           {
-            urlPattern: /^http:\/\/localhost:4005\/api\/.*/,
+            urlPattern: /^http:\/\/localhost:4000\/api\/.*/,
             handler: 'NetworkFirst',
             options: {
               cacheName: 'citysafe-api-cache',
