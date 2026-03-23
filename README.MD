@@ -10,19 +10,18 @@ CitySafe is a full-stack community safety prototype with:
 ## Repository
 
 GitHub:
-- [Notlikejoe/CitySafe](https://github.com/Notlikejoe/CitySafe)
+- [CitySafe](https://git.cs.bham.ac.uk/software-engineering-2025-26/ScriptSquad)
 
 Clone the repository:
 
 ```bash
-git clone https://github.com/Notlikejoe/CitySafe.git
-cd CitySafe
+git clone git@git.cs.bham.ac.uk:software-engineering-2025-26/ScriptSquad.git
 ```
 
 Project application directory:
 
 ```bash
-cd "CitySafe-youssefs-design-and-prod"
+cd ScriptSquad
 ```
 
 ## Current App Notes
@@ -60,7 +59,7 @@ Open two terminals.
 Backend:
 
 ```bash
-cd "/path/to/CitySafe/CitySafe-youssefs-design-and-prod/backend"
+cd "/path/to/ScriptSquad/backend"
 npm install
 npm run dev
 ```
@@ -68,7 +67,7 @@ npm run dev
 Frontend:
 
 ```bash
-cd "/path/to/CitySafe/CitySafe-youssefs-design-and-prod/frontend"
+cd "/path/to/ScriptSquad/frontend"
 npm install
 npm run dev
 ```
@@ -84,21 +83,21 @@ http://localhost:8888
 Backend tests:
 
 ```bash
-cd "/path/to/CitySafe/CitySafe-youssefs-design-and-prod/backend"
+cd "/path/to/ScriptSquad/backend"
 npm test
 ```
 
 Frontend tests:
 
 ```bash
-cd "/path/to/CitySafe/CitySafe-youssefs-design-and-prod/frontend"
+cd "/path/to/ScriptSquad/frontend"
 npm test
 ```
 
 Frontend production build:
 
 ```bash
-cd "/path/to/CitySafe/CitySafe-youssefs-design-and-prod/frontend"
+cd "/path/to/ScriptSquad/frontend"
 npm run build
 ```
 
