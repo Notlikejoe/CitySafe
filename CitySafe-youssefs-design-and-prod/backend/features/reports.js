@@ -16,6 +16,7 @@ const normalizeImageUrl = (value) => {
 // ─── Create Report ────────────────────────────────────────────────────────────
 export const createReport = async (userId, payload) => {
     const { type, description, location, imageRef, imageUrl } = payload;
+    const normalizedDescription = String(description ?? "").trim();
 
     // Normalize coordinates to floats once so storage and map rendering stay consistent.
     const normalizedLocation = {
@@ -25,6 +26,10 @@ export const createReport = async (userId, payload) => {
 
     if (!type) {
         return err("Type is required.");
+    }
+    // Mirror the frontend rule at the API boundary so blank reports cannot be created directly.
+    if (normalizedDescription.length <= 2) {
+        return err("Description must be at least 3 characters long.");
     }
     if (!isValidLocation(normalizedLocation)) {
         return err("Valid latitude and longitude are required.");
@@ -53,7 +58,7 @@ export const createReport = async (userId, payload) => {
     const res = await query(sql, [
         authorId,
         type,
-        description,
+        normalizedDescription,
         normalizedImageUrl,
         normalizedImageUrl,
         normalizedLocation.lon,

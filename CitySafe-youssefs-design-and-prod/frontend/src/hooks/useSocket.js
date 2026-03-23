@@ -14,7 +14,9 @@
 import { useEffect, useRef, useCallback } from "react";
 import { io } from "socket.io-client";
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? "http://localhost:4005";
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4001/api";
+// Derive the socket origin from the configured API URL so REST and realtime stay aligned.
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? API_URL.replace(/\/api\/?$/, "");
 
 let sharedSocket = null;
 let refCount = 0;

@@ -65,7 +65,20 @@ const storage = multer.diskStorage({
         cb(null, `${Date.now()}-${crypto.randomUUID()}${ext}`);
     },
 });
-const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5 MB cap
+const ALLOWED_UPLOAD_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const upload = multer({
+    storage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+        // Restrict uploads to common image types used by the prototype UI.
+        if (!ALLOWED_UPLOAD_TYPES.has(file.mimetype)) {
+            const error = new Error("Only PNG, JPEG, and WEBP images are allowed.");
+            error.status = 400;
+            return cb(error);
+        }
+        cb(null, true);
+    },
+}); // 5 MB cap
 
 // Fix 4: Ensure uploads directory exists at startup (prevents multer crash on fresh clone)
 if (!fs.existsSync(uploadDir)) {
@@ -624,6 +637,20 @@ app.post("/api/reports/:id/reject", requireAuth, requireAdmin, async (req, res) 
 });
 
 app.delete("/api/reports/:id/cancel", requireAuth, async (req, res) => {
+    const reportRes = await query(`SELECT id, author_id FROM reports WHERE id = $1`, [req.params.id]);
+    if (!reportRes.success) {
+        return res.status(500).json({ error: `Failed to load report: ${reportRes.error}` });
+    }
+
+    const report = reportRes.data.rows[0];
+    if (!report) {
+        return res.status(404).json({ error: "Report not found." });
+    }
+    // Match resolve/delete ownership checks so only the owner or an admin can retract.
+    if (req.user.role !== "admin" && report.author_id !== req.user.userId) {
+        return res.status(403).json({ error: "Only the report owner can retract this report." });
+    }
+
     const result = await cancelReport(req.params.id, req.user.userId);
     return send(res, result);
 });
@@ -980,6 +1007,7 @@ app.get("/api/community/feed", requireAuth, async (_req, res) => {
         FROM reports r
         WHERE r.status NOT IN ('resolved', 'cancelled')
         ORDER BY r.created_at DESC
+        LIMIT 100
     `);
 
     if (!reportsResult.success) {
@@ -1002,6 +1030,7 @@ app.get("/api/community/feed", requireAuth, async (_req, res) => {
         FROM sos_requests s
         WHERE s.status IN ('pending', 'under_review')
         ORDER BY s.created_at DESC
+        LIMIT 100
     `);
 
     if (!sosResult.success) {
@@ -1133,6 +1162,9 @@ app.use((req, res) => {
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
     log("error", "unhandled_express_error", { message: err.message, stack: err.stack, url: req.url });
+    if (err instanceof multer.MulterError || err.status === 400) {
+        return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ error: "Internal server error." });
 });
 
