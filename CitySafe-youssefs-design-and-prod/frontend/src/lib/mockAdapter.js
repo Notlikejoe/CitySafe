@@ -237,6 +237,34 @@ const store = {
             ],
             createdAt: "2026-02-21T11:00:00Z", updatedAt: "2026-02-21T11:30:00Z",
         },
+        // ── Active / pending SOS (shown in Community feed) ──
+        {
+            id: "s3", userId: "user_c", type: "medical",
+            location: { lat: 25.2075, lon: 55.2745 },
+            urgency: "high", description: "Child having severe allergic reaction, no EpiPen available",
+            status: "pending",
+            statusHistory: [{ from: null, to: "pending", at: "2026-03-22T19:45:00Z", by: "user_c" }],
+            createdAt: "2026-03-22T19:45:00Z", updatedAt: "2026-03-22T19:45:00Z",
+        },
+        {
+            id: "s4", userId: "user_d", type: "car_trouble",
+            location: { lat: 25.2040, lon: 55.2695 },
+            urgency: "medium", description: "Car battery dead on the main highway slip road, blocking traffic",
+            status: "pending",
+            statusHistory: [{ from: null, to: "pending", at: "2026-03-22T20:10:00Z", by: "user_d" }],
+            createdAt: "2026-03-22T20:10:00Z", updatedAt: "2026-03-22T20:10:00Z",
+        },
+        {
+            id: "s5", userId: "user_e", type: "electrician",
+            location: { lat: 25.2110, lon: 55.2762 },
+            urgency: "low", description: "Power cut in residential apartment, fuse box sparking",
+            status: "under_review",
+            statusHistory: [
+                { from: null, to: "pending", at: "2026-03-22T20:30:00Z", by: "user_e" },
+                { from: "pending", to: "under_review", at: "2026-03-22T20:35:00Z", by: "responder_01" },
+            ],
+            createdAt: "2026-03-22T20:30:00Z", updatedAt: "2026-03-22T20:35:00Z",
+        },
     ],
 
     pointsLedger: [
@@ -282,6 +310,7 @@ const genId = () => `mock_${++idCounter}`;
 const now = () => new Date().toISOString();
 const delay = (ms = 350) => new Promise((r) => setTimeout(r, ms));
 const wrap = (data) => ({ data });
+const DEMO_USER = { userId: "user_demo", role: "user", name: "Demo User", email: "demo@citysafe.app", displayName: "Demo User" };
 
 // ─── Reports ──────────────────────────────────────────────────────────────────
 const reportsHandlers = {
@@ -294,7 +323,7 @@ const reportsHandlers = {
         const report = {
             id: genId(), userId: data.userId ?? "user_demo",
             type: data.type, location: data.location,
-            description: data.description, imageRef: data.imageRef ?? null,
+            description: data.description, imageRef: data.imageUrl ?? data.imageRef ?? null, imageUrl: data.imageUrl ?? data.imageRef ?? null,
             status: "submitted",
             statusHistory: [{ from: null, to: "submitted", at: now(), by: data.userId ?? "user_demo" }],
             createdAt: now(), updatedAt: now(),
@@ -317,6 +346,21 @@ const reportsHandlers = {
         report.updatedAt = now();
         report.statusHistory.push({ from: prev, to: data.status, at: now(), by: data.actorId ?? "admin_01" });
         return wrap(report);
+    },
+    "PATCH /reports/:id/resolve": async ({ id }) => {
+        await delay();
+        const report = store.reports.find((r) => r.id === id);
+        if (!report) throw { response: { data: { error: "Report not found" }, status: 404 } };
+        report.status = "resolved";
+        report.updatedAt = now();
+        return wrap({ id: report.id, status: report.status, responderId: report.responderId ?? "user_demo", responderCount: report.responderCount ?? 1 });
+    },
+    "DELETE /reports/:id": async ({ id }) => {
+        await delay();
+        const index = store.reports.findIndex((r) => r.id === id);
+        if (index < 0) throw { response: { data: { error: "Report not found" }, status: 404 } };
+        store.reports.splice(index, 1);
+        return wrap({ success: true, id });
     },
     "GET /users/:id/reports": async ({ id }) => {
         await delay(300);
@@ -357,6 +401,7 @@ const sosHandlers = {
             id: genId(), userId: data.userId ?? "user_demo",
             type: data.type, location: data.location,
             urgency: data.urgency, description: data.description ?? "",
+            imageUrl: data.imageUrl ?? null,
             status: "pending",
             statusHistory: [{ from: null, to: "pending", at: now(), by: data.userId ?? "user_demo" }],
             createdAt: now(), updatedAt: now(),
@@ -383,6 +428,14 @@ const sosHandlers = {
     "GET /users/:id/sos": async ({ id }) => {
         await delay(300);
         return wrap(store.sosRequests.filter((s) => s.userId === id));
+    },
+    "PATCH /sos/:id/resolve": async ({ id }) => {
+        await delay();
+        const sos = store.sosRequests.find((s) => s.id === id);
+        if (!sos) throw { response: { data: { error: "SOS not found" }, status: 404 } };
+        sos.status = "resolved";
+        sos.updatedAt = now();
+        return wrap(sos);
     },
 };
 
@@ -470,21 +523,117 @@ const settingsHandlers = {
         _settingsStore[id] = { ...(_settingsStore[id] ?? {}), ...data };
         return wrap(_settingsStore[id]);
     },
+    "GET /user/settings": async () => {
+        await delay(200);
+        return wrap(_settingsStore[DEMO_USER.userId] ?? { anonymousReports: false, notifications: true, shareLocation: true, reportStatusUpdates: true, communityUpdates: false });
+    },
+    "PUT /user/settings": async ({ data }) => {
+        await delay(250);
+        _settingsStore[DEMO_USER.userId] = { ...(_settingsStore[DEMO_USER.userId] ?? {}), ...data };
+        return wrap(_settingsStore[DEMO_USER.userId]);
+    },
 };
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const authHandlers = {
     "POST /auth/register": async ({ data }) => {
         await delay();
-        return wrap({ userId: data.userId, role: "user", displayName: data.displayName || data.userId, token: "mock_token" });
+        return wrap({ userId: data.userId, role: "user", name: data.displayName || data.userId, email: "", displayName: data.displayName || data.userId, token: "mock_token" });
     },
     "POST /auth/login": async ({ data }) => {
         await delay();
-        return wrap({ userId: data.userId, role: "user", displayName: "Demo User", token: "mock_token" });
+        return wrap({ userId: data.userId, role: "user", name: "Demo User", email: "demo@citysafe.app", displayName: "Demo User", token: "mock_token" });
     },
     "GET /auth/me": async () => {
         await delay(200);
-        return wrap({ userId: "user_demo", role: "user", displayName: "Demo User" });
+        return wrap(DEMO_USER);
+    },
+    "GET /user/me": async () => {
+        await delay(200);
+        return wrap({ ...DEMO_USER, settings: _settingsStore[DEMO_USER.userId] ?? { anonymousReports: false, notifications: true, shareLocation: true, reportStatusUpdates: true, communityUpdates: false } });
+    },
+};
+
+// ─── Community Feed ───────────────────────────────────────────────────────────
+const communityHandlers = {
+    "GET /community/feed": async () => {
+        await delay(400);
+        const ACTIVE_REPORT_STATUSES = ["submitted", "under_review", "verified", "rejected"];
+        const activeReports = store.reports
+            .filter((r) => ACTIVE_REPORT_STATUSES.includes(r.status))
+            .map((r) => ({
+                id: r.id,
+                _type: "report",
+                description: r.description,
+                type: r.type,
+                status: r.status,
+                location: r.location,
+                createdAt: r.createdAt,
+                userId: r.userId,
+                imageUrl: r.imageUrl ?? r.imageRef ?? null,
+                responderId: r.responderId ?? null,
+                responderCount: r.responderCount ?? 0,
+            }));
+
+        const activeSos = store.sosRequests
+            .filter((s) => ["pending", "under_review"].includes(s.status))
+            .map((s) => ({
+                id: s.id,
+                _type: "sos",
+                description: s.description,
+                type: s.type,
+                urgency: s.urgency,
+                status: s.responderCount ? "in_progress" : s.status,
+                location: s.location,
+                createdAt: s.createdAt,
+                userId: s.userId,
+                imageUrl: s.imageUrl ?? null,
+                responderId: s.responderId ?? null,
+                responderCount: s.responderCount ?? 0,
+            }));
+
+        const feed = [...activeSos, ...activeReports]
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        return wrap(feed);
+    },
+    "POST /community/respond": async ({ data }) => {
+        await delay(250);
+        const collection = data.type === "sos" ? store.sosRequests : store.reports;
+        const item = collection.find((entry) => entry.id === data.requestId);
+
+        if (!item) {
+            throw new Error("Request not found.");
+        }
+
+        item.responderId = "user_demo";
+        item.responderCount = (item.responderCount ?? 0) + 1;
+
+        if (data.type === "sos" && item.status === "pending") {
+            item.status = "under_review";
+        }
+
+        return wrap({
+            success: true,
+            message: "You are now responding to this request",
+            data: {
+                requestId: item.id,
+                type: data.type,
+                responderId: item.responderId,
+                responderCount: item.responderCount,
+                status: "in_progress",
+            },
+        });
+    },
+    "POST /ratings": async ({ data }) => {
+        await delay(250);
+        return wrap({ id: genId(), reportId: data.reportId, userId: "user_demo", rating: data.rating, createdAt: now() });
+    },
+};
+
+const uploadHandlers = {
+    "POST /upload": async () => {
+        await delay(200);
+        return wrap({ imageUrl: "https://placehold.co/600x400/png" });
     },
 };
 
@@ -492,7 +641,7 @@ const allHandlers = {
     ...authHandlers,
     ...reportsHandlers, ...alertsHandlers, ...sosHandlers,
     ...historyHandlers, ...pointsHandlers, ...vouchersHandlers,
-    ...settingsHandlers,
+    ...settingsHandlers, ...communityHandlers, ...uploadHandlers,
 };
 
 // ─── Router ───────────────────────────────────────────────────────────────────

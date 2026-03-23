@@ -55,7 +55,8 @@ function Toggle({ enabled, onChange, disabled }) {
 export default function SettingsPage() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const { settings, isLoading, updateSetting } = useSettings(user?.userId ?? "");
+  const { settings, isLoading, isSaving, updateSetting } = useSettings(user?.userId ?? "");
+  const displayName = user?.name ?? user?.displayName ?? user?.userId ?? "User";
 
   const handleLogout = () => {
     logout();
@@ -73,11 +74,12 @@ export default function SettingsPage() {
       {/* Profile card */}
       <Card className="p-4 flex items-center gap-4">
         <div className="h-12 w-12 rounded-2xl bg-teal-100 flex items-center justify-center text-2xl font-bold text-teal-700 shrink-0">
-          {user?.userId?.[0]?.toUpperCase() ?? "U"}
+          {displayName[0]?.toUpperCase() ?? "U"}
         </div>
         <div className="flex-1 min-w-0">
-          <div className="font-semibold text-slate-800">{user?.userId ?? "User"}</div>
-          <div className="text-sm text-slate-400 capitalize">{user?.role ?? "member"}</div>
+          <div className="font-semibold text-slate-800">{displayName}</div>
+          <div className="text-sm text-slate-400">{user?.email || user?.userId || "No email on file"}</div>
+          <div className="text-xs text-slate-400 capitalize mt-1">{user?.role ?? "member"}</div>
         </div>
         <ChevronRight className="h-4 w-4 text-slate-300" />
       </Card>
@@ -107,7 +109,7 @@ export default function SettingsPage() {
                 <Toggle
                   enabled={!!settings[key]}
                   onChange={(newValue) => updateSetting({ [key]: newValue })}
-                  disabled={false}
+                  disabled={isSaving}
                 />
               </div>
             ))}

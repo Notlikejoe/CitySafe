@@ -6,6 +6,7 @@ import {
 import { useCreateSos, useCancelSos } from "../hooks/useSos";
 import { Button } from "../components/ui/Button";
 import { useOfflineQueue } from "../hooks/useOfflineQueue";
+import { useGeolocation } from "../hooks/useGeolocation";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SOS_TYPES = [
@@ -142,47 +143,11 @@ function LocationPill({ location, geoState, onRefresh }) {
   );
 }
 
-// ─── Geolocation hook ─────────────────────────────────────────────────────────
-function useGeolocation() {
-  const [location, setLocation] = useState(null);
-  // "idle" | "loading" | "ready" | "denied" | "error"
-  const [geoState, setGeoState] = useState("idle");
-
-  const fetch = useCallback(() => {
-    if (!navigator.geolocation) {
-      setGeoState("error");
-      return;
-    }
-    setGeoState("loading");
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude });
-        setGeoState("ready");
-      },
-      (err) => {
-        if (err.code === err.PERMISSION_DENIED) {
-          setGeoState("denied");
-        } else {
-          setGeoState("error");
-        }
-      },
-      { timeout: 10000, maximumAge: 60000 }
-    );
-  }, []);
-
-  // Auto-fetch on mount
-  useEffect(() => {
-    fetch();
-  }, [fetch]);
-
-  return { location, geoState, refresh: fetch };
-}
-
 // ─── Main ─────────────────────────────────────────────────────────────────────
 export default function SosPage() {
   const { mutate: createSos, isPending } = useCreateSos();
   const { mutate: cancelSos, isPending: cancelling } = useCancelSos();
-  const { location, geoState, refresh: refreshLocation } = useGeolocation();
+  const { location, geoState, error: geoError, refresh: refreshLocation } = useGeolocation();
   const { submitOrQueue } = useOfflineQueue();
 
   const [sosType, setSosType] = useState("");
@@ -197,12 +162,17 @@ export default function SosPage() {
   const [holdProgress, setHoldProgress] = useState(0);
 
   const isMedicalHigh = sosType === "medical" && urgency === "high";
-  const canSend = !!sosType && (geoState === "ready" || geoState === "denied" || geoState === "error");
+  // SOS requests now require a valid live coordinate instead of falling back to a hardcoded city.
+  const canSend = !!sosType && geoState === "ready" && !!location;
 
   const doSend = async () => {
     setError("");
-    const coords = location ?? { lat: 25.2048, lon: 55.2708 };
-    const payload = { type: sosType, urgency, description, location: coords };
+    if (!location) {
+      setError(geoError ?? "We need your location before sending this SOS request.");
+      return;
+    }
+
+    const payload = { type: sosType, urgency, description, location };
 
     // If offline, queue and bail out — will retry when connection resumes
     const queued = await submitOrQueue("sos", payload);
@@ -343,7 +313,7 @@ export default function SosPage() {
           {(geoState === "denied" || geoState === "error") && (
             <p className="text-xs text-amber-600 mt-1.5 flex items-center gap-1">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              Using approximate location — your request may still be sent.
+              A live location is required before this SOS can be sent.
             </p>
           )}
         </div>

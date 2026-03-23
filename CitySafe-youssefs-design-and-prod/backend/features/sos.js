@@ -1,17 +1,28 @@
 import { query } from "../db.js";
-import { tryCatch, ok, err, log, generateId } from "../utils.js";
+import { tryCatch, ok, err, log, generateId, isValidLocation } from "../utils.js";
 
 // ─── Create SOS ───────────────────────────────────────────────────────────────
 export const createSosRequest = async (userId, payload) => {
-    const { type, urgency, location, description } = payload;
-    if (!type || !urgency || !location?.lat || !location?.lon) {
-        return err("Type, urgency, lat, and lon are required.");
+    const { type, urgency, location, description, imageUrl } = payload;
+
+    // Convert API payload coordinates to floats before persisting to PostGIS.
+    const normalizedLocation = {
+        lat: Number(location?.lat),
+        lon: Number(location?.lon),
+    };
+
+    if (!type || !urgency) {
+        return err("Type and urgency are required.");
+    }
+    if (!isValidLocation(normalizedLocation)) {
+        return err("Valid latitude and longitude are required.");
     }
     
     const sql = `
-        INSERT INTO sos_requests (requester_id, type, urgency, description, location)
-        VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326))
-        RETURNING id, requester_id as "requesterId", type, urgency, description, status, created_at as "createdAt", 
+        INSERT INTO sos_requests (requester_id, type, urgency, description, image_url, location)
+        VALUES ($1, $2, $3, $4, $5, ST_SetSRID(ST_MakePoint($6, $7), 4326))
+        RETURNING id, requester_id as "requesterId", type, urgency, description, image_url as "imageUrl",
+                  status, created_at as "createdAt",
                   ST_X(location::geometry) as lon, ST_Y(location::geometry) as lat;
     `;
     
@@ -21,7 +32,7 @@ export const createSosRequest = async (userId, payload) => {
         if (uRes.data?.rows?.length > 0) reqId = uRes.data.rows[0].id;
     }
 
-    const res = await query(sql, [reqId, type, urgency, description, location.lon, location.lat]);
+    const res = await query(sql, [reqId, type, urgency, description, imageUrl ?? null, normalizedLocation.lon, normalizedLocation.lat]);
     if (!res.success) return err(res.error);
     
     const row = res.data.rows[0];

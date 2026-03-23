@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import L from "leaflet";
 import "leaflet.markercluster/dist/MarkerCluster.css";
@@ -6,53 +6,123 @@ import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import MarkerClusterGroup from "react-leaflet-markercluster";
 import {
   MapContainer, TileLayer, Marker, Popup,
-  Circle, Polyline, useMap, useMapEvents
+  Circle, useMap, useMapEvents,
 } from "react-leaflet";
 import {
-  ShieldCheck, AlertTriangle, Users, ThermometerSun,
-  Navigation, Plus, Siren, X, RefreshCw, Flame, ExternalLink,
+  AlertTriangle, Users, ThermometerSun, ShieldCheck,
+  Plus, Siren, X, RefreshCw, ExternalLink, MapPin,
 } from "lucide-react";
-import { useNearbyReports, useVerifyReport } from "../hooks/useReports";
+import { useVerifyReport } from "../hooks/useReports";
 import { useAlertsFeed } from "../hooks/useAlerts";
+import { useCommunityFeed } from "../hooks/useCommunity";
+import { useGeolocation } from "../hooks/useGeolocation";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { useNavigate } from "react-router-dom";
-import { renderToStaticMarkup } from "react-dom/server";
 import { useAuth } from "../contexts/AuthContext";
-import apiClient from "../lib/apiClient";
+import apiClient, { resolveApiUrl } from "../lib/apiClient";
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   DivIcon factory — colored pins that always render (no broken image URLs)
-───────────────────────────────────────────────────────────────────────────── */
-const TYPE_COLORS = {
-  pothole: { bg: "#f97316", border: "#ea580c", emoji: "🕳️" },
+const INCIDENT_COLORS = {
+  pothole: { bg: "#94a3b8", border: "#64748b", emoji: "🕳️" },
   flooding: { bg: "#3b82f6", border: "#2563eb", emoji: "🌊" },
   construction: { bg: "#eab308", border: "#ca8a04", emoji: "🚧" },
   fire: { bg: "#ef4444", border: "#dc2626", emoji: "🔥" },
-  crime: { bg: "#8b5cf6", border: "#7c3aed", emoji: "🚨" },
+  crime: { bg: "#111827", border: "#000000", emoji: "🚨" },
   other: { bg: "#64748b", border: "#475569", emoji: "📍" },
 };
 
-function makePin(type) {
-  const c = TYPE_COLORS[type] ?? TYPE_COLORS.other;
+const ACCESSIBILITY_COLORS = {
+  environmental: { bg: "#16a34a", border: "#15803d", emoji: "🌿" },
+  accessibility: { bg: "#0ea5e9", border: "#0284c7", emoji: "♿" },
+  safety: { bg: "#f59e0b", border: "#d97706", emoji: "🛡️" },
+  medical: { bg: "#dc2626", border: "#b91c1c", emoji: "🏥" },
+};
+
+const SOS_COLORS = { bg: "#dc2626", border: "#991b1b", emoji: "🆘" };
+const USER_COLORS = { bg: "#0f766e", border: "#115e59", emoji: "📍" };
+const WORLD_VIEW = { center: [0, 0], zoom: 2 };
+const USER_FOCUS_ZOOM = 13;
+const ACCESSIBILITY_RADIUS_KM = 8;
+const REQUEST_DEBOUNCE_MS = 400;
+const ACCESSIBILITY_FILTERS = [
+  { id: "environmental", label: "Environmental" },
+  { id: "accessibility", label: "Accessibility" },
+  { id: "safety", label: "Safety" },
+  { id: "medical", label: "Medical" },
+];
+
+const LENSES = [
+  { id: "hazards", label: "Hazards", Icon: AlertTriangle, desc: "Active hazards and SOS requests" },
+  { id: "crowds", label: "Crowds", Icon: Users, desc: "Incident-density zones from live backend data" },
+  { id: "heat", label: "Heat", Icon: ThermometerSun, desc: "Heat-style density overlay from incidents" },
+  { id: "accessibility", label: "Accessibility", Icon: ShieldCheck, desc: "Nearby relief, mobility, safety, and medical resources" },
+];
+
+const LENS_LEGEND = {
+  hazards: [
+    { color: "#ef4444", label: "Fire" },
+    { color: "#111827", label: "Crime" },
+    { color: "#eab308", label: "Construction" },
+    { color: "#3b82f6", label: "Flooding" },
+    { color: "#94a3b8", label: "Pothole" },
+    { color: "#dc2626", label: "SOS" },
+  ],
+  crowds: [
+    { color: "#ef4444", label: "High incident density" },
+    { color: "#f97316", label: "Medium incident density" },
+    { color: "#facc15", label: "Low incident density" },
+  ],
+  heat: [
+    { color: "#ef4444", label: "High intensity" },
+    { color: "#f97316", label: "Medium intensity" },
+    { color: "#facc15", label: "Low intensity" },
+  ],
+  accessibility: [
+    { color: "#16a34a", label: "Environmental relief" },
+    { color: "#0ea5e9", label: "Mobility & accessibility" },
+    { color: "#f59e0b", label: "Safety & protection" },
+    { color: "#dc2626", label: "Medical emergency" },
+  ],
+};
+
+const isRenderableLocation = (location) =>
+  Number.isFinite(Number(location?.lat)) &&
+  Number.isFinite(Number(location?.lon)) &&
+  Math.abs(Number(location.lat)) <= 90 &&
+  Math.abs(Number(location.lon)) <= 180;
+
+const isRenderableLatLng = (lat, lng) =>
+  Number.isFinite(Number(lat)) &&
+  Number.isFinite(Number(lng)) &&
+  Math.abs(Number(lat)) <= 90 &&
+  Math.abs(Number(lng)) <= 180;
+
+const formatIncidentTime = (createdAt) =>
+  new Date(createdAt).toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+function makePin(colors, pulse = false) {
   const svg = `
-    <div style="
-      width:32px; height:38px; position:relative;
-      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
-    ">
+    <div style="position:relative;width:32px;height:38px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.3));">
+      ${pulse ? `
+        <div style="
+          position:absolute;top:2px;left:2px;width:28px;height:28px;border-radius:999px;
+          background:rgba(220,38,38,0.18);animation:sos-pulse 1.8s ease-in-out infinite;
+        "></div>
+      ` : ""}
       <div style="
-        width:28px; height:28px; border-radius:50% 50% 50% 0;
-        transform:rotate(-45deg); background:${c.bg};
-        border:3px solid ${c.border};
-        position:absolute; top:0; left:2px;
+        width:28px;height:28px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);
+        background:${colors.bg};border:3px solid ${colors.border};position:absolute;top:0;left:2px;
       "></div>
-      <div style="
-        position:absolute; top:4px; left:6px;
-        font-size:13px; line-height:1;
-      ">${c.emoji}</div>
+      <div style="position:absolute;top:4px;left:6px;font-size:13px;line-height:1;">${colors.emoji}</div>
     </div>
   `;
+
   return L.divIcon({
     html: svg,
     className: "",
@@ -62,231 +132,101 @@ function makePin(type) {
   });
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Static overlay data
-───────────────────────────────────────────────────────────────────────────── */
-const CENTER = [25.2048, 55.2708];
+const makeIncidentPin = (item) =>
+  item._type === "sos"
+    ? makePin(SOS_COLORS, true)
+    : makePin(INCIDENT_COLORS[item.type] ?? INCIDENT_COLORS.other);
 
-// Safer route corridor
-const SAFE_ROUTE = [
-  [25.2048, 55.2708],
-  [25.2058, 55.2718],
-  [25.2072, 55.2726],
-  [25.2088, 55.2742],
-  [25.2105, 55.2763],
-];
-const ROUTE_BOUNDS = [[25.2035, 55.2695], [25.2120, 55.2780]];
+const makeAccessibilityPin = (resource) =>
+  makePin(ACCESSIBILITY_COLORS[resource.category] ?? ACCESSIBILITY_COLORS.accessibility);
 
-// Crowd density zones (Crowds lens)
-const CROWD_ZONES = [
-  { id: "c1", center: [25.1972, 55.2744], radius: 300, level: "High", color: "#ef4444", note: "Major event underway — expect heavy foot traffic" },
-  { id: "c2", center: [25.2090, 55.2680], radius: 200, level: "Medium", color: "#f97316", note: "Moderate pedestrian activity near the market" },
-  { id: "c3", center: [25.2140, 55.2800], radius: 150, level: "Low", color: "#22c55e", note: "Light traffic, good for walking" },
-  { id: "c4", center: [25.2055, 55.2770], radius: 180, level: "Medium", color: "#f97316", note: "Afternoon rush near transit hub" },
-  { id: "c5", center: [25.1995, 55.2690], radius: 120, level: "Low", color: "#22c55e", note: "Residential area, quiet" },
-];
+const userPin = makePin(USER_COLORS);
 
-// Heat/activity zones (Heat lens)
-const HEAT_ZONES = [
-  { id: "h1", center: [25.2060, 55.2720], radius: 350, color: "#ef4444", opacity: 0.20 },
-  { id: "h2", center: [25.1980, 55.2760], radius: 220, color: "#f97316", opacity: 0.17 },
-  { id: "h3", center: [25.2120, 55.2660], radius: 180, color: "#facc15", opacity: 0.15 },
-  { id: "h4", center: [25.2100, 55.2790], radius: 150, color: "#ef4444", opacity: 0.13 },
-  { id: "h5", center: [25.2030, 55.2700], radius: 250, color: "#f97316", opacity: 0.11 },
-];
-
-// Accessibility routes + facilities (Accessibility lens)
-const ACCESS_ROUTES = [
-  [[25.2048, 55.2708], [25.2058, 55.2720], [25.2075, 55.2738], [25.2092, 55.2755]],
-  [[25.2048, 55.2708], [25.2035, 55.2695], [25.2018, 55.2680], [25.2005, 55.2668]],
-  [[25.2048, 55.2708], [25.2060, 55.2695], [25.2072, 55.2685], [25.2088, 55.2672]],
-];
-const ACCESS_ZONES = [
-  { id: "az1", center: [25.2092, 55.2755], radius: 70, label: "Ramp + elevator" },
-  { id: "az2", center: [25.2018, 55.2680], radius: 60, label: "Accessible plaza" },
-  { id: "az3", center: [25.2088, 55.2672], radius: 55, label: "Tactile paving" },
-  { id: "az4", center: [25.2048, 55.2708], radius: 80, label: "Accessible transit hub" },
-];
-
-const LENSES = [
-  { id: "hazards", label: "Hazards", Icon: AlertTriangle, desc: "Active hazards and community reports" },
-  { id: "crowds", label: "Crowds", Icon: Users, desc: "Real-time crowd density zones" },
-  { id: "heat", label: "Heat", Icon: ThermometerSun, desc: "Activity and heat spot overlay" },
-  { id: "access", label: "Accessibility", Icon: ShieldCheck, desc: "Accessible routes and facilities" },
-];
-
-const LENS_LEGEND = {
-  hazards: [
-    { color: "#ef4444", label: "Fire / Crime" },
-    { color: "#f97316", label: "Pothole / Construction" },
-    { color: "#3b82f6", label: "Flooding" },
-    { color: "#8b5cf6", label: "Crime" },
-  ],
-  crowds: [
-    { color: "#ef4444", label: "High density" },
-    { color: "#f97316", label: "Medium density" },
-    { color: "#22c55e", label: "Low density" },
-  ],
-  heat: [
-    { color: "#ef4444", label: "Hot spot" },
-    { color: "#f97316", label: "High activity" },
-    { color: "#facc15", label: "Moderate" },
-  ],
-  access: [
-    { color: "#0ea5e9", label: "Step-free route", dashed: true },
-    { color: "#0ea5e9", label: "Accessible facility" },
-  ],
-};
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   MapController — programmatic pan/zoom inside MapContainer
-───────────────────────────────────────────────────────────────────────────── */
 function MapController({ flyTo }) {
   const map = useMap();
+
   useEffect(() => {
     if (!flyTo) return;
-    if (flyTo.bounds) {
-      map.fitBounds(flyTo.bounds, { padding: [60, 60], duration: 0.8 });
-    } else if (flyTo.center) {
-      map.flyTo(flyTo.center, flyTo.zoom ?? 14, { duration: 0.8 });
-    }
+    map.flyTo(flyTo.center, flyTo.zoom ?? USER_FOCUS_ZOOM, { duration: 0.8 });
   }, [flyTo, map]);
+
   return null;
 }
 
 function PanListener({ onPan }) {
-  const timerRef = useRef(null);
-  const map = useMapEvents({
-    moveend: () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
-        const center = map.getCenter();
-        onPan(center.lat, center.lng);
-      }, 500);
-    }
+  useMapEvents({
+    moveend: (event) => {
+      const center = event.target.getCenter();
+      onPan(center.lat, center.lng);
+    },
   });
+
   return null;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Lens overlay components
-───────────────────────────────────────────────────────────────────────────── */
-function HazardsLayer({ reports, onMarkerClick }) {
+function CommunityLayer({ items, onSelect }) {
   return (
     <MarkerClusterGroup chunkedLoading>
-      {reports.map((r) => (
+      {items.filter((item) => isRenderableLocation(item.location)).map((item) => {
+        const imageUrl = resolveApiUrl(item.imageUrl);
+        return (
         <Marker
-          key={r.id}
-          position={[r.location.lat, r.location.lon]}
-          icon={makePin(r.type)}
+          key={item.id}
+          position={[Number(item.location.lat), Number(item.location.lon)]}
+          icon={makeIncidentPin(item)}
           eventHandlers={{
-            click: () => onMarkerClick("hazard", {
-              reportId: r.id,
-              title: r.description,
-              status: r.status,
-              type: r.type,
-              location: r.location,
-              time: new Date(r.createdAt).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }),
+            click: () => onSelect("incident", {
+              incidentId: item.id,
+              itemType: item._type,
+              title: item.description,
+              status: item.status,
+              type: item.type,
+              urgency: item.urgency,
+              imageUrl: item.imageUrl,
+              location: item.location,
+              time: formatIncidentTime(item.createdAt),
             }),
           }}
         >
           <Popup>
             <div className="text-sm">
-              <div className="font-bold capitalize">{r.type.replace(/_/g, " ")}</div>
-              <div className="text-slate-500 text-xs mt-0.5">{r.description}</div>
-              <div className="mt-1 text-xs font-semibold capitalize" style={{
-                color: r.status === "verified" ? "#0d9488" : r.status === "resolved" ? "#6366f1" : "#f97316"
-              }}>{r.status.replace(/_/g, " ")}</div>
+              <div className="font-bold capitalize">
+                {item._type === "sos" ? "SOS" : "Hazard"} · {item.type.replace(/_/g, " ")}
+              </div>
+              <div className="text-slate-500 text-xs mt-0.5">{item.description}</div>
+              {imageUrl && (
+                <img
+                  src={imageUrl}
+                  alt={item.description}
+                  className="mt-2 h-24 w-full rounded-lg object-cover border border-slate-200"
+                />
+              )}
+              <div className="text-slate-500 text-xs mt-1">{formatIncidentTime(item.createdAt)}</div>
             </div>
           </Popup>
         </Marker>
-      ))}
+        );
+      })}
     </MarkerClusterGroup>
   );
 }
 
-function HazardSheet({ sheet, colors, reportId, mapsUrl, onClose }) {
-  const { user } = useAuth();
-  const { mutate: verify, isPending: verifying } = useVerifyReport();
-  const isAdmin = user?.role === "admin";
-
-  return (
-    <div>
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-xl">{colors.emoji}</span>
-        <div className="text-sm font-semibold text-slate-800 capitalize">
-          {(sheet.payload?.type ?? "hazard").replace(/_/g, " ")}
-        </div>
-      </div>
-      <p className="text-base font-bold text-slate-900">{sheet.payload?.title}</p>
-      <p className="text-xs text-slate-400 mt-1">{sheet.payload?.time}</p>
-      <div className="mt-3"><Badge status={sheet.payload?.status} /></div>
-
-      {/* Google Maps navigation link */}
-      {mapsUrl && (
-        <a
-          href={mapsUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-4 flex items-center gap-2 text-sm text-teal-600 hover:text-teal-700 font-semibold transition-colors"
-        >
-          <ExternalLink className="h-4 w-4" />
-          Navigate to location
-        </a>
-      )}
-
-      <div className="mt-5 flex gap-2">
-        {isAdmin && reportId && (
-          <Button
-            className="flex-1"
-            disabled={verifying || sheet.payload?.status !== "under_review"}
-            onClick={() => { verify(reportId); onClose(); }}
-          >
-            {verifying ? "Verifying…" : "Verify report"}
-          </Button>
-        )}
-        {!isAdmin && (
-          <Button className="flex-1" variant="secondary" onClick={onClose}>
-            Dismiss
-          </Button>
-        )}
-        <Button variant="secondary" onClick={onClose}>Close</Button>
-      </div>
-    </div>
-  );
-}
-
-function CrowdsLayer({ onZoneClick }) {
-  const { data: liveCrowdZones = [], isLoading } = useQuery({
-    queryKey: ["crowd-density"],
-    queryFn: () => apiClient.get("/crowd-density").then((r) => r.data ?? r),
-    staleTime: 60_000,
-    retry: 1,
-  });
-
-  // Fall back to static mock zones if no live data (e.g. no recent reports in area)
-  const zones = liveCrowdZones.length > 0 ? liveCrowdZones : CROWD_ZONES;
-
-  if (isLoading) return null;
-
+function CrowdLayer({ zones, onSelect }) {
   return (
     <>
-      {zones.map((z) => (
+      {zones.map((zone) => (
         <Circle
-          key={z.id}
-          center={z.center}
-          radius={z.radius}
+          key={zone.id}
+          center={zone.center}
+          radius={zone.radius}
           pathOptions={{
-            color: z.color, weight: 2.5,
-            fillColor: z.color, fillOpacity: 0.18,
-            dashArray: z.level === "Low" ? "8 8" : undefined,
+            color: zone.color,
+            weight: 2.5,
+            fillColor: zone.color,
+            fillOpacity: Math.max(zone.fillOpacity ?? 0.18, 0.16),
           }}
           eventHandlers={{
-            click: () => onZoneClick("crowd", {
-              title: `${z.level} crowd density`,
-              level: z.level,
-              note: z.note + (liveCrowdZones.length > 0 ? ` (${z.count ?? "?"} recent reports)` : " (estimated)"),
-            }),
+            click: () => onSelect("crowd", zone),
           }}
         />
       ))}
@@ -294,97 +234,72 @@ function CrowdsLayer({ onZoneClick }) {
   );
 }
 
-function HeatLayer() {
+function HeatLayer({ zones }) {
   return (
     <>
-      {HEAT_ZONES.map((z) => (
+      {zones.map((zone) => (
         <Circle
-          key={z.id}
-          center={z.center}
-          radius={z.radius}
-          pathOptions={{ color: "transparent", weight: 0, fillColor: z.color, fillOpacity: z.opacity }}
+          key={`heat_${zone.id}`}
+          center={zone.center}
+          radius={Math.round(zone.radius * 1.25)}
+          pathOptions={{
+            color: "transparent",
+            weight: 0,
+            fillColor: zone.color,
+            fillOpacity: zone.fillOpacity ?? 0.16,
+          }}
         />
       ))}
     </>
   );
 }
 
-function AccessibilityLayer({ onRouteClick }) {
+function AccessibilityLayer({ resources }) {
   return (
-    <>
-      {ACCESS_ROUTES.map((pts, i) => (
-        <Polyline
-          key={i}
-          positions={pts}
-          pathOptions={{ color: "#0ea5e9", weight: 6, opacity: 0.85, dashArray: "1 10", lineCap: "round" }}
-          eventHandlers={{
-            click: () => onRouteClick("route", {
-              title: "Accessible route",
-              eta: `${7 + i * 3} min`,
-              notes: ["Step-free throughout", "Elevators at all junctions", "Wide pavements"],
-            }),
-          }}
-        />
-      ))}
-      {ACCESS_ZONES.map((z) => (
-        <Circle
-          key={z.id}
-          center={z.center}
-          radius={z.radius}
-          pathOptions={{ color: "#0ea5e9", weight: 2.5, fillColor: "#0ea5e9", fillOpacity: 0.15 }}
+    <MarkerClusterGroup chunkedLoading>
+      {resources.filter((resource) => isRenderableLatLng(resource.lat, resource.lng)).map((resource) => {
+        const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${resource.lat},${resource.lng}`;
+        return (
+        <Marker
+          key={resource.id}
+          position={[Number(resource.lat), Number(resource.lng)]}
+          icon={makeAccessibilityPin(resource)}
+          zIndexOffset={1000}
         >
-          <Popup><div className="text-sm font-semibold text-sky-700">{z.label}</div></Popup>
-        </Circle>
-      ))}
-    </>
+          <Popup>
+            <div className="text-sm">
+              <div className="font-bold">{resource.name}</div>
+              <div className="text-slate-500 text-xs mt-0.5 capitalize">{resource.category}</div>
+              <div className="text-slate-500 text-xs mt-1">{resource.description}</div>
+              <div className="text-slate-500 text-xs mt-1">
+                {resource.category} · {resource.distanceKm} km away
+              </div>
+              <a
+                href={mapsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-teal-600 hover:text-teal-700"
+              >
+                <ExternalLink className="h-3 w-3" />
+                Navigate
+              </a>
+            </div>
+          </Popup>
+        </Marker>
+      )})}
+    </MarkerClusterGroup>
   );
 }
 
-function SaferRouteLayer({ visible, onRouteClick }) {
-  if (!visible) return null;
-  return (
-    <>
-      {/* Route glow underlay */}
-      <Polyline
-        positions={SAFE_ROUTE}
-        pathOptions={{ color: "#0d9488", weight: 18, opacity: 0.12, lineCap: "round" }}
-      />
-      {/* Main route line */}
-      <Polyline
-        positions={SAFE_ROUTE}
-        pathOptions={{ color: "#0d9488", weight: 5, opacity: 0.95, lineCap: "round", lineJoin: "round" }}
-        eventHandlers={{
-          click: () => onRouteClick("route", {
-            title: "Safest route",
-            eta: "14 min",
-            notes: ["Avoids high crowd zone", "Avoids reported hazard", "Well-lit path at night"],
-          }),
-        }}
-      />
-    </>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Legend helper
-───────────────────────────────────────────────────────────────────────────── */
-function LegRow({ color, label, dashed }) {
+function LegRow({ color, label }) {
   return (
     <div className="flex items-center gap-2">
-      <div style={{
-        height: 10, width: 20, borderRadius: 99, flexShrink: 0,
-        background: dashed ? "transparent" : color,
-        border: dashed ? `2px dashed ${color}` : "none",
-        opacity: 0.85,
-      }} />
+      <div style={{ height: 10, width: 20, borderRadius: 99, background: color, opacity: 0.85 }} />
       <span className="text-xs text-slate-600">{label}</span>
     </div>
   );
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Bottom sheet
-───────────────────────────────────────────────────────────────────────────── */
 function BottomSheet({ open, onClose, children }) {
   return (
     <div className={`absolute inset-0 z-[1100] ${open ? "pointer-events-auto" : "pointer-events-none"}`} aria-hidden={!open}>
@@ -407,189 +322,260 @@ function BottomSheet({ open, onClose, children }) {
   );
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Sheet content
-───────────────────────────────────────────────────────────────────────────── */
-function SheetContent({ lens, sheet, setLens, onClose, navigate }) {
-  if (sheet.type === "lens") {
-    return (
-      <div>
-        <p className="text-sm font-semibold mb-3 text-slate-800">Safety Lens</p>
-        <div className="grid gap-2">
-          {LENSES.map(({ id, label, Icon, desc }) => (
-            <button
-              key={id}
-              onClick={() => { setLens(id); onClose(); }}
-              className={[
-                "flex items-center gap-3 rounded-2xl border px-4 py-3 text-left transition-all",
-                lens === id ? "border-teal-500 bg-teal-50" : "border-slate-200 hover:border-slate-300",
-              ].join(" ")}
-            >
-              <Icon className={`h-5 w-5 ${lens === id ? "text-teal-600" : "text-slate-400"}`} />
-              <div>
-                <div className="font-semibold text-sm text-slate-800">{label}</div>
-                <div className="text-xs text-slate-500">{desc}</div>
-              </div>
-            </button>
-          ))}
-        </div>
+function IncidentSheet({ payload, onClose }) {
+  const { user } = useAuth();
+  const { mutate: verify, isPending: verifying } = useVerifyReport();
+  const isReport = payload?.itemType === "report";
+  const isAdmin = user?.role === "admin";
+  const mapsUrl = isRenderableLocation(payload?.location)
+    ? `https://www.google.com/maps/dir/?api=1&destination=${payload.location.lat},${payload.location.lon}`
+    : null;
+  const imageUrl = resolveApiUrl(payload?.imageUrl);
+
+  return (
+    <div>
+      <div className="text-sm font-semibold text-slate-800 capitalize">
+        {payload?.itemType === "sos" ? "SOS" : "Hazard"} · {payload?.type?.replace(/_/g, " ")}
       </div>
-    );
-  }
-
-  if (sheet.type === "hazard") {
-    const colors = TYPE_COLORS[sheet.payload?.type] ?? { bg: "#64748b", border: "#475569", emoji: "📍" };
-    const { reportId, location } = sheet.payload ?? {};
-    const mapsUrl = location?.lat
-      ? `https://www.google.com/maps/dir/?api=1&destination=${location.lat},${location.lon}`
-      : null;
-    return (
-      <HazardSheet
-        sheet={sheet}
-        colors={colors}
-        reportId={reportId}
-        mapsUrl={mapsUrl}
-        onClose={onClose}
-      />
-    );
-  }
-
-  if (sheet.type === "crowd") {
-    const levelColor = { High: "#dc2626", Medium: "#ea580c", Low: "#16a34a" }[sheet.payload?.level] ?? "#64748b";
-    return (
-      <div>
-        <div className="flex items-center gap-2 mb-3">
-          <Users className="h-5 w-5 text-teal-600" />
-          <p className="text-sm font-semibold text-slate-800">Crowd Zone</p>
+      <p className="text-base font-bold text-slate-900 mt-2">{payload?.title}</p>
+      <p className="text-xs text-slate-400 mt-1">{payload?.time}</p>
+      {imageUrl && (
+        <img
+          src={imageUrl}
+          alt={payload.title}
+          className="mt-4 h-44 w-full rounded-2xl object-cover border border-slate-200"
+        />
+      )}
+      <div className="mt-3"><Badge status={payload?.status} /></div>
+      {payload?.urgency && (
+        <div className="mt-2 text-xs font-semibold text-red-600 capitalize">
+          Urgency: {payload.urgency}
         </div>
-        <p className="text-base font-bold text-slate-900">{sheet.payload?.title}</p>
-        <p className="text-sm text-slate-500 mt-1">{sheet.payload?.note}</p>
-        <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold"
-          style={{ background: `${levelColor}18`, color: levelColor, border: `1px solid ${levelColor}44` }}>
-          {sheet.payload?.level} density
-        </div>
-        <div className="mt-5 flex gap-2">
-          <Button className="flex-1" onClick={() => { setLens("access"); onClose(); }}>
-            See accessible route
+      )}
+
+      {mapsUrl && (
+        <a
+          href={mapsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-4 inline-flex items-center gap-2 text-sm text-teal-600 hover:text-teal-700 font-semibold"
+        >
+          <ExternalLink className="h-4 w-4" />
+          Navigate to location
+        </a>
+      )}
+
+      <div className="mt-5 flex gap-2">
+        {isAdmin && isReport && payload?.incidentId && (
+          <Button
+            className="flex-1"
+            disabled={verifying || payload?.status !== "under_review"}
+            onClick={() => { verify(payload.incidentId); onClose(); }}
+          >
+            {verifying ? "Verifying…" : "Verify report"}
           </Button>
-          <Button variant="secondary" onClick={onClose}>Dismiss</Button>
+        )}
+        <Button variant="secondary" className="flex-1" onClick={onClose}>Close</Button>
+      </div>
+    </div>
+  );
+}
+
+function CrowdSheet({ payload, onClose }) {
+  return (
+    <div>
+      <div className="text-sm font-semibold text-slate-800">Incident density</div>
+      <p className="text-base font-bold text-slate-900 mt-2">{payload?.level} density zone</p>
+      <p className="text-sm text-slate-500 mt-1">{payload?.note}</p>
+      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+        <div className="rounded-2xl border border-slate-200 p-3">
+          <div className="text-xs uppercase tracking-widest text-slate-400">Incidents</div>
+          <div className="text-lg font-bold text-slate-900 mt-1">{payload?.count ?? 0}</div>
+        </div>
+        <div className="rounded-2xl border border-slate-200 p-3">
+          <div className="text-xs uppercase tracking-widest text-slate-400">Weighted intensity</div>
+          <div className="text-lg font-bold text-slate-900 mt-1">{payload?.weight ?? 0}</div>
         </div>
       </div>
-    );
-  }
+      <div className="mt-5">
+        <Button variant="secondary" className="w-full" onClick={onClose}>Close</Button>
+      </div>
+    </div>
+  );
+}
 
-  if (sheet.type === "route") {
-    return (
-      <div>
-        <div className="flex items-center gap-2 mb-3">
-          <ShieldCheck className="h-5 w-5 text-teal-600" />
-          <p className="text-sm font-semibold text-slate-800">{sheet.payload?.title ?? "Safer Route"}</p>
-        </div>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <div className="text-2xl font-extrabold text-slate-900">{sheet.payload?.eta ?? "—"}</div>
-            <div className="text-xs text-slate-400">estimated walk</div>
-          </div>
-          <div className="h-10 w-10 rounded-full bg-teal-50 border border-teal-200 flex items-center justify-center">
-            <Navigation className="h-5 w-5 text-teal-600" />
-          </div>
-        </div>
-        <div className="space-y-2 mb-5">
-          {(sheet.payload?.notes ?? ["Uses clearer walkways", "Avoids flagged areas"]).map((n) => (
-            <div key={n} className="flex gap-2.5 text-sm text-slate-600 items-start">
-              <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-teal-500 shrink-0" />
-              <span>{n}</span>
+function AlertsSheet({ alerts }) {
+  return (
+    <div>
+      <p className="text-sm font-semibold mb-3 text-slate-800">Active Alerts</p>
+      <div className="space-y-3">
+        {alerts?.map((alert) => (
+          <div key={alert.id} className="rounded-2xl border border-slate-200 p-3">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <span className="text-sm font-semibold capitalize text-slate-800">
+                {alert.type.replace(/_/g, " ")}
+              </span>
+              <Badge status={alert.priority} />
             </div>
-          ))}
-        </div>
-        <div className="flex gap-2">
-          <Button className="flex-1">Start navigation</Button>
-          <Button variant="secondary">Options</Button>
-        </div>
+            <p className="text-xs text-slate-500">{alert.message}</p>
+          </div>
+        ))}
       </div>
-    );
-  }
+    </div>
+  );
+}
 
-  if (sheet.type === "alerts") {
-    return (
-      <div>
-        <p className="text-sm font-semibold mb-3 text-slate-800">⚠️ Active Alerts</p>
-        <div className="space-y-3">
-          {sheet.payload?.alerts?.map((a) => (
-            <div key={a.id} className="rounded-2xl border border-slate-200 p-3">
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <span className="text-sm font-semibold capitalize text-slate-800">
-                  {a.type.replace(/_/g, " ")}
-                </span>
-                <Badge status={a.priority} />
-              </div>
-              <p className="text-xs text-slate-500">{a.message}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
+function SheetContent({ sheet, onClose }) {
+  if (sheet.type === "incident") return <IncidentSheet payload={sheet.payload} onClose={onClose} />;
+  if (sheet.type === "crowd") return <CrowdSheet payload={sheet.payload} onClose={onClose} />;
+  if (sheet.type === "alerts") return <AlertsSheet alerts={sheet.payload?.alerts} />;
   return null;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Main MapPage
-───────────────────────────────────────────────────────────────────────────── */
 export default function MapPage() {
   const [lens, setLens] = useState("hazards");
-  const [showRoute, setShowRoute] = useState(false);
   const [sheet, setSheet] = useState({ open: false, type: null, payload: null });
   const [flyTo, setFlyTo] = useState(null);
-  const [viewport, setViewport] = useState({ lat: CENTER[0], lon: CENTER[1], radius: 10 });
+  const [initialView, setInitialView] = useState(WORLD_VIEW);
+  const [hasCenteredOnUser, setHasCenteredOnUser] = useState(false);
+  const [viewport, setViewport] = useState({
+    lat: WORLD_VIEW.center[0],
+    lon: WORLD_VIEW.center[1],
+    radius: ACCESSIBILITY_RADIUS_KM,
+  });
+  const [debouncedViewport, setDebouncedViewport] = useState(viewport);
+  const [accessibilityFilters, setAccessibilityFilters] = useState({
+    environmental: true,
+    accessibility: true,
+    safety: true,
+    medical: true,
+  });
   const navigate = useNavigate();
 
-  const { data: reports = [], isLoading: reportsLoading } =
-    useNearbyReports(viewport.lat, viewport.lon, viewport.radius);
-  const { data: alerts = [], isLoading: alertsLoading } =
-    useAlertsFeed();
+  const { location: userLocation, geoState, error: geoError, loading: geoLoading, refresh: refreshLocation } = useGeolocation();
+  const {
+    data: communityFeed = [],
+    isLoading: feedLoading,
+    isFetching: feedFetching,
+    isError: feedError,
+    error: feedLoadError,
+    refetch: refetchFeed,
+  } = useCommunityFeed();
+  const { data: alerts = [], isLoading: alertsLoading } = useAlertsFeed();
 
-  const priorityAlerts = alerts.filter((a) => a.active);
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      setDebouncedViewport(viewport);
+    }, REQUEST_DEBOUNCE_MS);
 
+    return () => clearTimeout(timeoutId);
+  }, [viewport]);
+
+  const {
+    data: densityZones = [],
+    isLoading: densityLoading,
+    isFetching: densityFetching,
+  } = useQuery({
+    queryKey: ["crowd-density", debouncedViewport.lat, debouncedViewport.lon, debouncedViewport.radius],
+    queryFn: () =>
+      apiClient.get("/crowd-density", {
+        lat: debouncedViewport.lat,
+        lon: debouncedViewport.lon,
+        radius: debouncedViewport.radius,
+      }).then((response) => response.data ?? response),
+    enabled: (lens === "crowds" || lens === "heat") && Number.isFinite(debouncedViewport.lat) && Number.isFinite(debouncedViewport.lon),
+    placeholderData: (previous) => previous,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
+
+  const {
+    data: accessibilityResources = [],
+    isLoading: accessibilityLoading,
+    isFetching: accessibilityFetching,
+    isError: accessibilityError,
+    error: accessibilityLoadError,
+    refetch: refetchAccessibility,
+  } = useQuery({
+    queryKey: ["accessibility", debouncedViewport.lat, debouncedViewport.lon, debouncedViewport.radius],
+    queryFn: async () => {
+      const response = await apiClient.get("/accessibility/resources", {
+        lat: debouncedViewport.lat,
+        lon: debouncedViewport.lon,
+        radius: debouncedViewport.radius,
+      });
+
+      const resources = (response.data ?? response)
+        .map((resource) => ({
+          ...resource,
+          lat: Number(resource.lat),
+          lng: Number(resource.lng),
+          name: resource.name ?? resource.label ?? "Nearby resource",
+        }))
+        .filter((resource) => isRenderableLatLng(resource.lat, resource.lng));
+
+      // Explicit debug output for the broken visibility path.
+      console.debug("[MapPage] accessibility resources", resources);
+
+      return resources;
+    },
+    enabled: lens === "accessibility" && Number.isFinite(debouncedViewport.lat) && Number.isFinite(debouncedViewport.lon),
+    placeholderData: (previous) => previous,
+    staleTime: 120_000,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
+
+  const priorityAlerts = alerts.filter((alert) => alert.active);
+  const mapIncidents = communityFeed.filter((item) => isRenderableLocation(item.location));
+  const filteredAccessibilityResources = accessibilityResources.filter(
+    (resource) => accessibilityFilters[resource.category]
+  );
   const openSheet = useCallback((type, payload) => setSheet({ open: true, type, payload }), []);
   const closeSheet = useCallback(() => setSheet({ open: false, type: null, payload: null }), []);
 
-  const handleLensChange = (id) => {
-    setLens(id);
-    setShowRoute(false);
-    setFlyTo({ center: CENTER, zoom: 13 });
+  useEffect(() => {
+    if (!userLocation || hasCenteredOnUser) return;
+
+    const centeredView = {
+      center: [userLocation.lat, userLocation.lon],
+      zoom: USER_FOCUS_ZOOM,
+    };
+
+    // Neutral first render, then jump to the user's actual coordinates once available.
+    setInitialView(centeredView);
+    setViewport((prev) => ({ ...prev, lat: userLocation.lat, lon: userLocation.lon }));
+    setFlyTo(centeredView);
+    setHasCenteredOnUser(true);
+  }, [userLocation, hasCenteredOnUser]);
+
+  const handleLensChange = (lensId) => {
+    setLens(lensId);
+    if (userLocation) {
+      setFlyTo({ center: [userLocation.lat, userLocation.lon], zoom: USER_FOCUS_ZOOM });
+    }
     closeSheet();
   };
 
-  const handleSaferRoute = () => {
-    const next = !showRoute;
-    setShowRoute(next);
-    if (next) {
-      setFlyTo({ bounds: ROUTE_BOUNDS });
-      openSheet("route", {
-        title: "Safest route",
-        eta: "14 min",
-        notes: ["Avoids high crowd zone", "Avoids reported hazard", "Well-lit path at night"],
-      });
-    } else {
-      setFlyTo({ center: CENTER, zoom: 13 });
-      closeSheet();
-    }
+  const toggleAccessibilityFilter = (category) => {
+    setAccessibilityFilters((current) => ({
+      ...current,
+      [category]: !current[category],
+    }));
   };
+
+  const isUpdating = feedLoading || feedFetching || alertsLoading || densityLoading || densityFetching
+    || (lens === "accessibility" && (accessibilityLoading || accessibilityFetching));
 
   return (
     <div className="h-full w-full flex flex-col">
-      {/* ── Top bar ── */}
       <header className="h-14 shrink-0 border-b border-slate-200 bg-white/95 backdrop-blur z-10">
         <div className="h-full px-3 flex items-center gap-2 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
-
-          {/* Brand (desktop only) */}
           <div className="hidden md:block font-bold text-slate-900 tracking-tight shrink-0 mr-2">
             CitySafe
           </div>
 
-          {/* Active alert pill */}
           {priorityAlerts.length > 0 && (
             <button
               onClick={() => openSheet("alerts", { alerts: priorityAlerts })}
@@ -600,15 +586,14 @@ export default function MapPage() {
             </button>
           )}
 
-          {/* Lens switcher — scrollable on mobile, all visible on desktop */}
           <div className="flex items-center rounded-full border border-slate-200 p-1 bg-white shadow-sm shrink-0">
-            {LENSES.map(({ id, label, Icon }) => {
+            {LENSES.map(({ id, label, Icon, desc }) => {
               const active = lens === id;
               return (
                 <button
                   key={id}
                   onClick={() => handleLensChange(id)}
-                  title={LENSES.find((l) => l.id === id)?.desc}
+                  title={desc}
                   aria-pressed={active}
                   className={[
                     "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all whitespace-nowrap",
@@ -624,47 +609,69 @@ export default function MapPage() {
         </div>
       </header>
 
-      {/* ── Map ── */}
+      {lens === "accessibility" && (
+        <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-2">
+          <div className="flex flex-wrap gap-2">
+            {ACCESSIBILITY_FILTERS.map((filter) => {
+              const active = accessibilityFilters[filter.id];
+              return (
+                <button
+                  key={filter.id}
+                  onClick={() => toggleAccessibilityFilter(filter.id)}
+                  aria-pressed={active}
+                  className={[
+                    "rounded-full px-3 py-1.5 text-xs font-semibold transition-all",
+                    active
+                      ? "bg-teal-600 text-white"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200",
+                  ].join(" ")}
+                >
+                  {filter.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="relative flex-1 min-h-0">
-        <MapContainer center={CENTER} zoom={14} className="h-full w-full" zoomControl>
+        <MapContainer center={initialView.center} zoom={initialView.zoom} className="h-full w-full" zoomControl>
           <TileLayer
             attribution="&copy; OpenStreetMap contributors"
             url="https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png"
           />
 
           <MapController flyTo={flyTo} />
-          <PanListener onPan={(lat, lon) => setViewport(prev => ({ ...prev, lat, lon }))} />
+          <PanListener onPan={(lat, lon) => setViewport((prev) => ({ ...prev, lat, lon }))} />
 
-          {/* Lens overlays */}
-          {lens === "hazards" && <HazardsLayer reports={reports} onMarkerClick={openSheet} />}
-          {lens === "crowds" && <CrowdsLayer onZoneClick={openSheet} />}
-          {lens === "heat" && <HeatLayer />}
-          {lens === "access" && <AccessibilityLayer onRouteClick={openSheet} />}
+          {userLocation && (
+            <Marker position={[userLocation.lat, userLocation.lon]} icon={userPin}>
+              <Popup>
+                <div className="text-sm font-semibold text-slate-800">You are here</div>
+              </Popup>
+            </Marker>
+          )}
 
-          {/* Safer route — independent of lens */}
-          <SaferRouteLayer visible={showRoute} onRouteClick={openSheet} />
+          {lens === "hazards" && (
+            <CommunityLayer items={mapIncidents} onSelect={openSheet} />
+          )}
+          {lens === "crowds" && (
+            <CrowdLayer zones={densityZones} onSelect={openSheet} />
+          )}
+          {lens === "heat" && (
+            <HeatLayer zones={densityZones} />
+          )}
+          {lens === "accessibility" && (
+            <AccessibilityLayer resources={filteredAccessibilityResources} />
+          )}
         </MapContainer>
 
-        {/* Floating buttons */}
         <div className="absolute right-4 bottom-16 z-[1000] flex flex-col items-end gap-2">
           <button
             onClick={() => navigate("/report")}
             className="inline-flex items-center gap-2 rounded-full px-4 py-2.5 border border-slate-200 bg-white shadow-md text-sm font-semibold text-slate-800 hover:bg-slate-50 hover:shadow-lg transition-all active:scale-[0.97]"
           >
             <Plus className="h-4 w-4 text-teal-600" /> Report
-          </button>
-          <button
-            onClick={handleSaferRoute}
-            aria-pressed={showRoute}
-            className={[
-              "inline-flex items-center gap-2 rounded-full px-4 py-2.5 border shadow-md text-sm font-semibold transition-all active:scale-[0.97]",
-              showRoute
-                ? "bg-teal-600 border-teal-500 text-white shadow-teal-600/25"
-                : "bg-white border-slate-200 text-slate-800 hover:bg-slate-50 hover:shadow-lg",
-            ].join(" ")}
-          >
-            <ShieldCheck className={`h-4 w-4 ${showRoute ? "text-white" : "text-teal-600"}`} />
-            Safer route
           </button>
           <button
             onClick={() => navigate("/sos")}
@@ -674,32 +681,82 @@ export default function MapPage() {
           </button>
         </div>
 
-        {/* Dynamic legend */}
         <div className="absolute left-3 bottom-4 z-[1000] hidden md:block">
-          <Card className="p-3 min-w-[150px]">
+          <Card className="p-3 min-w-[170px]">
             <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">
-              {LENSES.find((l) => l.id === lens)?.label}
+              {LENSES.find((item) => item.id === lens)?.label}
             </div>
             <div className="flex flex-col gap-1.5">
-              {(LENS_LEGEND[lens] ?? []).map(({ color, label, dashed }) => (
-                <LegRow key={label} color={color} label={label} dashed={dashed} />
+              {(LENS_LEGEND[lens] ?? []).map(({ color, label }) => (
+                <LegRow key={label} color={color} label={label} />
               ))}
-              {showRoute && <LegRow color="#0d9488" label="Safer route" />}
             </div>
           </Card>
         </div>
 
-        {/* Loading */}
-        {(reportsLoading || alertsLoading) && (
+        {(geoLoading || geoState === "denied" || geoState === "error") && (
+          <div className="absolute top-3 left-3 z-[1000] max-w-xs rounded-2xl border border-slate-200 bg-white/95 px-3 py-2 shadow text-xs text-slate-600">
+            <div className="flex items-start gap-2">
+              <MapPin className="h-4 w-4 mt-0.5 text-teal-600 shrink-0" />
+              <div>
+                <div className="font-semibold text-slate-800">
+                  {geoLoading ? "Finding your location…" : "Using neutral world view"}
+                </div>
+                {!geoLoading && (
+                  <div className="mt-0.5">
+                    {geoError ?? "Location permission was not granted, so the map stayed neutral."}
+                  </div>
+                )}
+                {!geoLoading && (
+                  <button
+                    onClick={refreshLocation}
+                    className="mt-2 text-teal-600 font-semibold hover:text-teal-700"
+                  >
+                    Retry location
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {feedError && (
+          <div className="absolute top-3 right-3 z-[1000] max-w-xs rounded-2xl border border-red-200 bg-white px-3 py-2 shadow text-xs text-red-700">
+            <div className="font-semibold">Failed to load map markers.</div>
+            <div className="mt-1">{feedLoadError?.message ?? "The community feed is unavailable."}</div>
+            <button onClick={() => refetchFeed()} className="mt-2 text-red-600 font-semibold hover:text-red-700">
+              Retry
+            </button>
+          </div>
+        )}
+
+        {lens === "accessibility" && accessibilityError && (
+          <div className="absolute top-24 right-3 z-[1000] max-w-xs rounded-2xl border border-red-200 bg-white px-3 py-2 shadow text-xs text-red-700">
+            <div className="font-semibold">Failed to load accessibility resources.</div>
+            <div className="mt-1">{accessibilityLoadError?.message ?? "Try another area or retry the request."}</div>
+            <button onClick={() => refetchAccessibility()} className="mt-2 text-red-600 font-semibold hover:text-red-700">
+              Retry
+            </button>
+          </div>
+        )}
+
+        {lens === "accessibility" && !accessibilityLoading && !accessibilityFetching && filteredAccessibilityResources.length === 0 && (
+          <div className="absolute top-24 left-3 z-[1000] max-w-xs rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow text-xs text-slate-600">
+            {accessibilityResources.length === 0
+              ? "No accessibility resources were found for this area yet."
+              : "All accessibility categories are currently filtered out."}
+          </div>
+        )}
+
+        {isUpdating && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 px-3 py-1.5 rounded-full bg-white border border-slate-200 shadow text-xs text-slate-600">
             <RefreshCw className="h-3 w-3 animate-spin text-teal-500" /> Updating…
           </div>
         )}
 
-        {/* Bottom sheet */}
         {sheet.open && (
           <BottomSheet open={sheet.open} onClose={closeSheet}>
-            <SheetContent lens={lens} sheet={sheet} setLens={handleLensChange} onClose={closeSheet} navigate={navigate} />
+            <SheetContent sheet={sheet} onClose={closeSheet} />
           </BottomSheet>
         )}
       </div>

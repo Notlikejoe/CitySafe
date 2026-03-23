@@ -33,6 +33,7 @@ export const useCreateReport = () => {
             toast.success("Report submitted! Thanks for keeping your community safe 🙌");
             qc.invalidateQueries({ queryKey: ["reports"] });
             qc.invalidateQueries({ queryKey: ["history"] });
+            qc.invalidateQueries({ queryKey: ["community", "feed"] });
         },
         onError: (e) => toast.error(e.message ?? "Failed to submit report"),
     });
@@ -115,5 +116,45 @@ export const useCancelReport = () => {
             toast.success("Report retracted");
         },
         onError: (e) => toast.error(e.message ?? "Failed to retract report"),
+    });
+};
+
+export const useResolveReport = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (id) => reportsService.resolve(id).then((r) => r.data),
+        onSuccess: () => {
+            toast.success("Report resolved");
+            qc.invalidateQueries({ queryKey: ["reports"] });
+            qc.invalidateQueries({ queryKey: ["history"] });
+            qc.invalidateQueries({ queryKey: ["community", "feed"] });
+        },
+        onError: (e) => toast.error(e.message ?? "Failed to resolve report"),
+    });
+};
+
+export const useDeleteReport = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (id) => reportsService.remove(id).then((r) => r.data),
+        onSuccess: () => {
+            toast.success("Report deleted");
+            qc.invalidateQueries({ queryKey: ["reports"] });
+            qc.invalidateQueries({ queryKey: ["history"] });
+            qc.invalidateQueries({ queryKey: ["community", "feed"] });
+        },
+        onError: (e) => toast.error(e.message ?? "Failed to delete report"),
+    });
+};
+
+export const useRateResponder = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ reportId, rating }) => reportsService.rateResponder(reportId, rating).then((r) => r.data),
+        onSuccess: () => {
+            toast.success("Responder rating saved");
+            qc.invalidateQueries({ queryKey: ["history"] });
+        },
+        onError: (e) => toast.error(e.message ?? "Failed to save responder rating"),
     });
 };

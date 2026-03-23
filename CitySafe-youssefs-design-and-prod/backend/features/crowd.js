@@ -1,102 +1,217 @@
 /**
  * CitySafe Crowd Density Feature
  *
- * Calculates real-time crowd density by aggregating recent report activity
- * into a spatial grid. Each grid cell covers approximately 0.01° × 0.01°
- * (~1.1 km × 1.1 km). Cells with high recent activity are classified as
- * "High" density, moderate as "Medium", and quiet cells as "Low".
+ * External crowd APIs are not dependable enough for this application without a
+ * dedicated commercial provider, so the heat/crowd overlays are derived from
+ * live internal incident data.
  *
- * This replaces the static CROWD_ZONES mock data in MapPage.jsx.
+ * This version improves the previous implementation by:
+ * - scoping queries to the current map viewport when coordinates are provided
+ * - smoothing nearby points into neighbouring grid cells
+ * - applying distance-based decay for more realistic intensity
+ * - normalizing every zone intensity into a stable 0..1 range for the frontend
  */
 
 import { query } from "../db.js";
-import { tryCatch, ok } from "../utils.js";
+import { calculateDistance, isValidLocation, ok, log } from "../utils.js";
 
-// Map density levels to visual colours matching the frontend legend
-const LEVEL_COLOR = {
-    High:   "#ef4444",
-    Medium: "#f97316",
-    Low:    "#22c55e",
+const LEVEL_META = {
+    High: { color: "#ef4444", note: "High incident density in this area" },
+    Medium: { color: "#f97316", note: "Moderate incident density nearby" },
+    Low: { color: "#facc15", note: "Light incident density nearby" },
 };
 
-const LEVEL_NOTE = {
-    High:   "High activity — elevated report density in this area",
-    Medium: "Moderate activity — some recent reports nearby",
-    Low:    "Low activity — quiet area with few recent reports",
-};
+const CELL_DEG = 0.035;
+const SMOOTHING_STEPS = 1;
+const EPSILON = 0.15;
 
-// Consider reports filed within the last 2 hours
-const WINDOW_STR = "2 hours";
+const buildScopedIncidentQuery = (scope) => {
+    if (scope) {
+        return {
+            sql: `
+                WITH incident_points AS (
+                    SELECT
+                        ST_Y(location::geometry) AS lat,
+                        ST_X(location::geometry) AS lon,
+                        1.0 AS weight
+                    FROM reports
+                    WHERE location IS NOT NULL
+                      AND status NOT IN ('resolved', 'cancelled')
+                      AND created_at >= NOW() - INTERVAL '24 hours'
+                      AND ST_DWithin(
+                          location::geography,
+                          ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+                          $3
+                      )
 
-// Grid cell size in degrees (~1.11 km at the equator)
-const CELL_DEG = 0.01;
+                    UNION ALL
 
-/**
- * Returns crowd density zones derived from recent report density.
- * Each zone is a circle centred on a grid-cell centroid.
- *
- * @returns {Promise<{ id, center: [lat, lon], radius, level, color, note }[]>}
- */
-export const getCrowdZones = async () => tryCatch(async () => {
-    // Fetch recent reports from PostgreSQL
-    const res = await query(`
-        SELECT ST_Y(location::geometry) as lat, ST_X(location::geometry) as lon 
-        FROM reports 
-        WHERE created_at >= NOW() - INTERVAL '2 hours'
-        AND location IS NOT NULL
-    `);
-
-    if (!res.success) return ok([]);
-
-    // Bucket recent reports into grid cells
-    const cellCounts = new Map(); // "cLat:cLon" → count
-    const cellCentroids = new Map(); // "cLat:cLon" → { lat, lon, sumLat, sumLon, count }
-
-    for (const report of res.data.rows) {
-        const lat = parseFloat(report.lat);
-        const lon = parseFloat(report.lon);
-        const cLat = Math.floor(lat / CELL_DEG);
-        const cLon = Math.floor(lon / CELL_DEG);
-        const key = `${cLat}:${cLon}`;
-
-        cellCounts.set(key, (cellCounts.get(key) ?? 0) + 1);
-
-        if (!cellCentroids.has(key)) {
-            cellCentroids.set(key, { sumLat: 0, sumLon: 0, count: 0 });
-        }
-        const c = cellCentroids.get(key);
-        c.sumLat += lat;
-        c.sumLon += lon;
-        c.count += 1;
+                    SELECT
+                        ST_Y(location::geometry) AS lat,
+                        ST_X(location::geometry) AS lon,
+                        CASE urgency
+                            WHEN 'high' THEN 3.0
+                            WHEN 'medium' THEN 2.0
+                            ELSE 1.0
+                        END AS weight
+                    FROM sos_requests
+                    WHERE location IS NOT NULL
+                      AND status IN ('pending', 'under_review')
+                      AND created_at >= NOW() - INTERVAL '24 hours'
+                      AND ST_DWithin(
+                          location::geography,
+                          ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+                          $3
+                      )
+                )
+                SELECT lat, lon, weight
+                FROM incident_points
+            `,
+            params: [scope.lon, scope.lat, scope.radiusMeters],
+        };
     }
 
-    // Sort by count descending to only surface the most active zones
-    const sorted = [...cellCounts.entries()].sort((a, b) => b[1] - a[1]);
+    return {
+        sql: `
+            WITH incident_points AS (
+                SELECT
+                    ST_Y(location::geometry) AS lat,
+                    ST_X(location::geometry) AS lon,
+                    1.0 AS weight
+                FROM reports
+                WHERE location IS NOT NULL
+                  AND status NOT IN ('resolved', 'cancelled')
+                  AND created_at >= NOW() - INTERVAL '24 hours'
 
-    const zones = sorted.map(([key, count], idx) => {
-        const c = cellCentroids.get(key);
-        const centerLat = c.sumLat / c.count;
-        const centerLon = c.sumLon / c.count;
+                UNION ALL
 
-        // Classify density level
-        let level;
-        if (count >= 5) level = "High";
-        else if (count >= 2) level = "Medium";
-        else level = "Low";
+                SELECT
+                    ST_Y(location::geometry) AS lat,
+                    ST_X(location::geometry) AS lon,
+                    CASE urgency
+                        WHEN 'high' THEN 3.0
+                        WHEN 'medium' THEN 2.0
+                        ELSE 1.0
+                    END AS weight
+                FROM sos_requests
+                WHERE location IS NOT NULL
+                  AND status IN ('pending', 'under_review')
+                  AND created_at >= NOW() - INTERVAL '24 hours'
+            )
+            SELECT lat, lon, weight
+            FROM incident_points
+        `,
+        params: [],
+    };
+};
 
-        // Scale radius with activity (base 150 m, up to 500 m)
-        const radius = Math.min(150 + count * 30, 500);
+export const getCrowdZones = async (lat, lon, radiusKm = 12) => {
+    try {
+        const scope = isValidLocation({ lat: Number(lat), lon: Number(lon) })
+            ? {
+                lat: Number(lat),
+                lon: Number(lon),
+                radiusMeters: Math.max(4000, Number(radiusKm || 12) * 1000 * 1.8),
+            }
+            : null;
 
-        return {
-            id: `crowd_${key}_${idx}`,
-            center: [centerLat, centerLon],
-            radius,
-            level,
-            color: LEVEL_COLOR[level],
-            note: LEVEL_NOTE[level],
-            count,
-        };
-    });
+        const queryConfig = buildScopedIncidentQuery(scope);
+        const res = await query(queryConfig.sql, queryConfig.params);
 
-    return ok(zones);
-}, "crowd.getZones");
+        if (!res.success) {
+            log("error", "crowd.query_failed", { error: res.error });
+            return ok([]);
+        }
+
+        const points = res.data.rows
+            .map((row) => ({
+                lat: Number(row.lat),
+                lon: Number(row.lon),
+                weight: Number(row.weight),
+            }))
+            .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lon) && Number.isFinite(point.weight));
+
+        if (points.length === 0) {
+            return ok([]);
+        }
+
+        const candidateCells = new Map();
+        for (const point of points) {
+            const baseLat = Math.floor(point.lat / CELL_DEG);
+            const baseLon = Math.floor(point.lon / CELL_DEG);
+
+            for (let latStep = -SMOOTHING_STEPS; latStep <= SMOOTHING_STEPS; latStep++) {
+                for (let lonStep = -SMOOTHING_STEPS; lonStep <= SMOOTHING_STEPS; lonStep++) {
+                    const cellLat = baseLat + latStep;
+                    const cellLon = baseLon + lonStep;
+                    const key = `${cellLat}:${cellLon}`;
+
+                    if (!candidateCells.has(key)) {
+                        candidateCells.set(key, {
+                            centerLat: (cellLat + 0.5) * CELL_DEG,
+                            centerLon: (cellLon + 0.5) * CELL_DEG,
+                        });
+                    }
+                }
+            }
+        }
+
+        const rawZones = Array.from(candidateCells.entries())
+            .map(([key, cell], index) => {
+                let influence = 0;
+                let incidentCount = 0;
+
+                for (const point of points) {
+                    const distanceKm = calculateDistance(cell.centerLat, cell.centerLon, point.lat, point.lon);
+                    const contribution = point.weight / (distanceKm * distanceKm + EPSILON);
+                    influence += contribution;
+
+                    if (distanceKm <= 4) {
+                        incidentCount += 1;
+                    }
+                }
+
+                if (influence <= 0.05) return null;
+
+                return {
+                    id: `density_${key}_${index}`,
+                    center: [cell.centerLat, cell.centerLon],
+                    influence,
+                    count: incidentCount,
+                };
+            })
+            .filter(Boolean);
+
+        const maxInfluence = Math.max(...rawZones.map((zone) => zone.influence), 1);
+
+        const zones = rawZones
+            .map((zone) => {
+                const intensity = Math.min(zone.influence / maxInfluence, 1);
+                let level = "Low";
+                if (intensity >= 0.65) level = "High";
+                else if (intensity >= 0.35) level = "Medium";
+
+                const meta = LEVEL_META[level];
+                const radius = Math.round(220 + intensity * 680);
+
+                return {
+                    id: zone.id,
+                    center: zone.center,
+                    radius,
+                    level,
+                    color: meta.color,
+                    note: meta.note,
+                    count: zone.count,
+                    intensity: Number(intensity.toFixed(4)),
+                    weight: Number(zone.influence.toFixed(4)),
+                    fillOpacity: Math.max(0.12, intensity * 0.35),
+                };
+            })
+            .sort((a, b) => b.intensity - a.intensity);
+
+        return ok(zones);
+    } catch (error) {
+        log("error", "crowd.unhandled_error", { message: error.message });
+        return ok([]);
+    }
+};

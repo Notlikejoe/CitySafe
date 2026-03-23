@@ -4,6 +4,12 @@ export const reportsService = {
     getNearby: (lat, lng, radius = 5, filters = {}) =>
         client.get("/reports", { lat, lng, radius, ...filters }),
 
+    uploadImage: (file) => {
+        const formData = new FormData();
+        formData.append("image", file);
+        return client.post("/upload", formData);
+    },
+
     create: (payload) =>
         client.post("/reports", payload),
 
@@ -27,4 +33,13 @@ export const reportsService = {
     // Owner: cancel a report
     cancel: (id) =>
         client.delete(`/reports/${id}/cancel`),
+
+    resolve: (id) =>
+        client.patch(`/reports/${id}/resolve`, {}),
+
+    remove: (id) =>
+        client.delete(`/reports/${id}`),
+
+    rateResponder: (reportId, rating) =>
+        client.post("/ratings", { reportId, rating }),
 };

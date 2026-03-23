@@ -7,6 +7,8 @@ CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     username VARCHAR(255) UNIQUE NOT NULL,
+    name VARCHAR(255),
+    email VARCHAR(255),
     password_hash VARCHAR(255) NOT NULL,
     role VARCHAR(50) DEFAULT 'member' CHECK (role IN ('member', 'admin', 'moderator')),
     points INTEGER DEFAULT 0,
@@ -20,6 +22,7 @@ CREATE TABLE IF NOT EXISTS reports (
     type VARCHAR(50) NOT NULL,
     description TEXT,
     image_ref VARCHAR(255),
+    image_url TEXT,
     status VARCHAR(50) DEFAULT 'under_review' CHECK (status IN ('under_review', 'verified', 'resolved', 'rejected', 'cancelled')),
     location GEOMETRY(Point, 4326) NOT NULL, -- Storing coords as Point(lon, lat) using SRID 4326 (WGS 84)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -35,6 +38,7 @@ CREATE TABLE IF NOT EXISTS sos_requests (
     type VARCHAR(50) NOT NULL,
     urgency VARCHAR(50) NOT NULL CHECK (urgency IN ('low', 'medium', 'high')),
     description TEXT,
+    image_url TEXT,
     status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'under_review', 'resolved', 'cancelled')),
     location GEOMETRY(Point, 4326) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -91,6 +95,27 @@ CREATE TABLE IF NOT EXISTS user_vouchers (
     user_id UUID REFERENCES users(id) ON DELETE CASCADE,
     voucher_id UUID REFERENCES vouchers(id) ON DELETE CASCADE,
     redeemed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- User Settings
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    notifications BOOLEAN DEFAULT true,
+    report_status_updates BOOLEAN DEFAULT true,
+    community_updates BOOLEAN DEFAULT false,
+    share_location BOOLEAN DEFAULT true,
+    anonymous_reports BOOLEAN DEFAULT false,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Ratings
+CREATE TABLE IF NOT EXISTS ratings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    report_id UUID REFERENCES reports(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE (report_id, user_id)
 );
 
 -- Function to safely update points and record in ledger

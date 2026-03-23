@@ -8,8 +8,9 @@ export const useSettings = (userId = "") => {
 
     const query = useQuery({
         queryKey: ["settings", userId],
-        queryFn: () => client.get(`/users/${userId}/settings`).then((r) => r.data),
+        queryFn: () => client.get("/user/settings").then((r) => r.data),
         staleTime: 60_000,
+        enabled: !!userId,
         // Provide sensible defaults while loading (no flash of undefined)
         placeholderData: {
             anonymousReports: false,
@@ -21,7 +22,11 @@ export const useSettings = (userId = "") => {
     });
 
     const mutation = useMutation({
-        mutationFn: (patch) => client.patch(`/users/${userId}/settings`, patch).then((r) => r.data),
+        mutationFn: (patch) =>
+            client.put("/user/settings", {
+                ...(queryClient.getQueryData(["settings", userId]) ?? query.data ?? {}),
+                ...patch,
+            }).then((r) => r.data),
         // Optimistic update: apply change immediately in UI, revert on error
         onMutate: async (patch) => {
             await queryClient.cancelQueries({ queryKey: ["settings", userId] });
@@ -37,5 +42,10 @@ export const useSettings = (userId = "") => {
         },
     });
 
-    return { settings: query.data, isLoading: query.isLoading, updateSetting: mutation.mutate };
+    return {
+        settings: query.data,
+        isLoading: query.isLoading,
+        isSaving: mutation.isPending,
+        updateSetting: mutation.mutate,
+    };
 };

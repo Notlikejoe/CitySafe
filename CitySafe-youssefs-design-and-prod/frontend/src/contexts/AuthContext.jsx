@@ -9,10 +9,16 @@ export function AuthProvider({ children }) {
 
   // On mount: verify session against server via the HTTPOnly cookie
   useEffect(() => {
-    client.get("/auth/me")
+    client.get("/user/me")
       .then((res) => {
         const data = res.data ?? res;
-        setUser({ userId: data.userId, role: data.role, displayName: data.displayName });
+        setUser({
+          userId: data.userId,
+          role: data.role,
+          name: data.name ?? data.displayName,
+          email: data.email ?? "",
+          displayName: data.displayName ?? data.name,
+        });
       })
       .catch(() => {
         // Cookie is missing or invalid — user is not logged in
@@ -23,15 +29,15 @@ export function AuthProvider({ children }) {
 
   const login = useCallback(async (userId, password) => {
     const res = await client.post("/auth/login", { userId, password });
-    const { userId: uid, role, displayName } = res.data ?? res;
-    setUser({ userId: uid, role, displayName });
+    const { userId: uid, role, displayName, name, email } = res.data ?? res;
+    setUser({ userId: uid, role, displayName: displayName ?? name, name: name ?? displayName, email: email ?? "" });
     return res.data ?? res;
   }, []);
 
   const register = useCallback(async (userId, password, displayName) => {
     const res = await client.post("/auth/register", { userId, password, displayName });
-    const { userId: uid, role, displayName: dName } = res.data ?? res;
-    setUser({ userId: uid, role, displayName: dName });
+    const { userId: uid, role, displayName: dName, name, email } = res.data ?? res;
+    setUser({ userId: uid, role, displayName: dName ?? name, name: name ?? dName, email: email ?? "" });
     return res.data ?? res;
   }, []);
 

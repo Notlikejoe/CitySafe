@@ -1,18 +1,39 @@
 import { query } from "../db.js";
-import { tryCatch, ok, err, log, generateId } from "../utils.js";
+import { tryCatch, ok, err, log, generateId, isValidLocation } from "../utils.js";
 import { awardPoints } from "./points.js";
+
+const normalizeImageUrl = (value) => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+
+    // Only persist actual URLs or backend upload paths. This avoids leaking
+    // old free-text "image" values into <img src>, which produced broken output.
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    if (trimmed.startsWith("/uploads/")) return trimmed;
+    return null;
+};
 
 // ─── Create Report ────────────────────────────────────────────────────────────
 export const createReport = async (userId, payload) => {
-    const { type, description, location, imageRef } = payload;
-    if (!type || !location?.lat || !location?.lon) {
-        return err("Type, lat, and lon are required.");
+    const { type, description, location, imageRef, imageUrl } = payload;
+
+    // Normalize coordinates to floats once so storage and map rendering stay consistent.
+    const normalizedLocation = {
+        lat: Number(location?.lat),
+        lon: Number(location?.lon),
+    };
+
+    if (!type) {
+        return err("Type is required.");
+    }
+    if (!isValidLocation(normalizedLocation)) {
+        return err("Valid latitude and longitude are required.");
     }
     
     const sql = `
-        INSERT INTO reports (author_id, type, description, image_ref, location)
-        VALUES ($1, $2, $3, $4, ST_SetSRID(ST_MakePoint($5, $6), 4326))
-        RETURNING id, author_id, type, description, image_ref, status, created_at, 
+        INSERT INTO reports (author_id, type, description, image_ref, image_url, location)
+        VALUES ($1, $2, $3, $4, $5, ST_SetSRID(ST_MakePoint($6, $7), 4326))
+        RETURNING id, author_id, type, description, image_ref, image_url, status, created_at,
                   ST_X(location::geometry) as lon, ST_Y(location::geometry) as lat;
     `;
     
@@ -28,7 +49,16 @@ export const createReport = async (userId, payload) => {
         }
     }
 
-    const res = await query(sql, [authorId, type, description, imageRef, location.lon, location.lat]);
+    const normalizedImageUrl = normalizeImageUrl(imageUrl ?? imageRef ?? null);
+    const res = await query(sql, [
+        authorId,
+        type,
+        description,
+        normalizedImageUrl,
+        normalizedImageUrl,
+        normalizedLocation.lon,
+        normalizedLocation.lat,
+    ]);
     if (!res.success) return err(res.error);
     
     const row = res.data.rows[0];
@@ -37,7 +67,8 @@ export const createReport = async (userId, payload) => {
         authorId: row.author_id,
         type: row.type,
         description: row.description,
-        imageRef: row.image_ref,
+        imageRef: normalizeImageUrl(row.image_ref),
+        imageUrl: normalizeImageUrl(row.image_url ?? row.image_ref ?? null),
         status: row.status,
         createdAt: row.created_at,
         location: { lat: row.lat, lon: row.lon }
@@ -76,7 +107,9 @@ export const getNearbyReports = async (lat, lon, radiusKm = 5, page = 1) => {
     const radiusMeters = radiusKm * 1000;
     
     const sql = `
-        SELECT id, author_id as "authorId", type, description, image_ref as "imageRef", status, created_at as "createdAt",
+        SELECT id, author_id as "authorId", type, description,
+               image_ref as "imageRef", COALESCE(image_url, image_ref) as "imageUrl",
+               status, created_at as "createdAt",
                ST_X(location::geometry) as lon, ST_Y(location::geometry) as lat,
                ST_Distance(location::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) as distance_m
         FROM reports
@@ -90,6 +123,8 @@ export const getNearbyReports = async (lat, lon, radiusKm = 5, page = 1) => {
     
     const items = res.data.rows.map(r => ({
         ...r,
+        imageRef: normalizeImageUrl(r.imageRef),
+        imageUrl: normalizeImageUrl(r.imageUrl),
         location: { lat: r.lat, lon: r.lon }
     }));
     
@@ -105,7 +140,9 @@ export const getReportsByUser = async (userId, page = 1) => {
     }
     
     const sql = `
-        SELECT id, author_id as "authorId", type, description, image_ref as "imageRef", status, created_at as "createdAt",
+        SELECT id, author_id as "authorId", type, description,
+               image_ref as "imageRef", COALESCE(image_url, image_ref) as "imageUrl",
+               status, created_at as "createdAt",
                ST_X(location::geometry) as lon, ST_Y(location::geometry) as lat
         FROM reports
         WHERE author_id = $1
@@ -118,6 +155,8 @@ export const getReportsByUser = async (userId, page = 1) => {
     
     const items = res.data.rows.map(r => ({
         ...r,
+        imageRef: normalizeImageUrl(r.imageRef),
+        imageUrl: normalizeImageUrl(r.imageUrl),
         location: { lat: r.lat, lon: r.lon }
     }));
     

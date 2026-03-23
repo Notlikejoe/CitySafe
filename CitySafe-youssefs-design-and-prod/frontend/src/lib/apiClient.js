@@ -7,7 +7,12 @@ import { mockRequest } from "./mockAdapter";
 import toast from "react-hot-toast";
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4005/api";
+// Fix frontend API config fallback to correct backend port 4001
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4001/api";
+const API_ORIGIN = API_URL.replace(/\/api\/?$/, "");
+
+const isFormData = (value) =>
+    typeof FormData !== "undefined" && value instanceof FormData;
 
 // ─── Real axios instance ──────────────────────────────────────────────
 const axiosInstance = axios.create({
@@ -23,11 +28,25 @@ const axiosInstance = axios.create({
 axiosInstance.interceptors.response.use(
     (res) => res,
     (error) => {
-        const message =
-            error.response?.data?.error ??
-            error.response?.data?.message ??
-            error.message ??
-            "Something went wrong";
+        let message = "Something went wrong";
+
+        if (!error.response) {
+            // Network error (ERR_CONNECTION_REFUSED, offline, CORS, etc.)
+            message = "Network Error: Could not connect to the server.";
+        } else if (error.response.status >= 500) {
+            // Server error 
+            message = "Server Error: Backend is experiencing issues.";
+        } else if (error.response.status === 401) {
+            // Auth error
+            message = "Authentication Error: Please log in again.";
+        } else {
+            // Standard/validation API responses gracefully handled
+            message =
+                error.response?.data?.error ??
+                error.response?.data?.message ??
+                error.message ??
+                "Something went wrong";
+        }
             
         if (error.response?.status === 401 && !USE_MOCK) {
             // Prevent infinite redirect loop if we are trying to login
@@ -54,16 +73,41 @@ const client = {
     },
     post: (url, data = {}) => {
         if (USE_MOCK) return mockRequest("POST", url, data);
+        if (isFormData(data)) {
+            return axiosInstance.post(url, data, { headers: { "Content-Type": undefined } });
+        }
         return axiosInstance.post(url, data);
     },
     patch: (url, data = {}) => {
         if (USE_MOCK) return mockRequest("PATCH", url, data);
+        if (isFormData(data)) {
+            return axiosInstance.patch(url, data, { headers: { "Content-Type": undefined } });
+        }
         return axiosInstance.patch(url, data);
+    },
+    put: (url, data = {}) => {
+        if (USE_MOCK) return mockRequest("PUT", url, data);
+        if (isFormData(data)) {
+            return axiosInstance.put(url, data, { headers: { "Content-Type": undefined } });
+        }
+        return axiosInstance.put(url, data);
     },
     delete: (url) => {
         if (USE_MOCK) return mockRequest("DELETE", url, null);
         return axiosInstance.delete(url);
     },
+};
+
+export const resolveApiUrl = (path = "") => {
+    if (!path) return "";
+    const trimmed = String(path).trim();
+
+    // Only expand real upload paths or absolute URLs. This prevents arbitrary
+    // text fields from being treated as image sources in the UI.
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    if (!trimmed.startsWith("/uploads/")) return "";
+
+    return `${API_ORIGIN}${trimmed}`;
 };
 
 export default client;

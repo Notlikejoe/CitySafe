@@ -64,6 +64,7 @@ export const getUserLedger = async (userId) => {
 };
 
 // ─── Redeem Voucher ───────────────────────────────────────────────────────────
-export const redeemVoucher = async (userId, voucherId) => {
-    return err("Not implemented for Postgres yet");
-};
+// Full implementation lives in features/vouchers.js. Re-exported here so any
+// callers importing from points.js get the real function, not the old stub.
+export { redeemVoucher } from "./vouchers.js";
+

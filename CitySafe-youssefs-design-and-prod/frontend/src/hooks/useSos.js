@@ -52,3 +52,17 @@ export const useCancelSos = () => {
         },
     });
 };
+
+export const useResolveSos = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (id) => sosService.resolve(id).then((r) => r.data),
+        onSuccess: () => {
+            toast.success("SOS request resolved");
+            qc.invalidateQueries({ queryKey: ["sos"] });
+            qc.invalidateQueries({ queryKey: ["history"] });
+            qc.invalidateQueries({ queryKey: ["community", "feed"] });
+        },
+        onError: (e) => toast.error(e.message ?? "Failed to resolve SOS request"),
+    });
+};

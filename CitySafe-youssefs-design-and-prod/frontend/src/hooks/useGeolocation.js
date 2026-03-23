@@ -1,48 +1,74 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 /**
- * useGeolocation — wraps navigator.geolocation.getCurrentPosition
- * Returns: { location: {lat, lon} | null, error: string | null, loading: boolean }
+ * Shared geolocation hook for the whole app.
+ * Uses getCurrentPosition so screens start from a single exact fix and can retry on demand.
  */
 export function useGeolocation() {
   const [location, setLocation] = useState(null);
-  const [error, setError]       = useState(null);
-  const [loading, setLoading]   = useState(true);
+  const [error, setError] = useState(null);
+  const [geoState, setGeoState] = useState("idle");
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
     if (!navigator.geolocation) {
       setError("Geolocation is not supported by your browser.");
-      setLoading(false);
+      setGeoState("error");
       return;
     }
 
-    const id = navigator.geolocation.watchPosition(
+    setError(null);
+    setGeoState("loading");
+
+    navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+        const lat = Number(pos.coords.latitude);
+        const lon = Number(pos.coords.longitude);
+
+        // Clamp accepted values to valid world coordinates before any map or API use.
+        if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+          setLocation(null);
+          setError("Received invalid coordinates from your device.");
+          setGeoState("error");
+          return;
+        }
+
+        setLocation({ lat, lon });
         setError(null);
-        setLoading(false);
+        setGeoState("ready");
       },
       (err) => {
+        setLocation(null);
         switch (err.code) {
           case err.PERMISSION_DENIED:
-            setError("Location access was denied. Please allow location in your browser settings to submit a report.");
+            setError("Location access was denied. Please allow location in your browser settings.");
+            setGeoState("denied");
             break;
           case err.POSITION_UNAVAILABLE:
             setError("Location information is unavailable. Please try again.");
+            setGeoState("error");
             break;
           case err.TIMEOUT:
             setError("Location request timed out. Please try again.");
+            setGeoState("error");
             break;
           default:
             setError("An unknown error occurred while retrieving location.");
+            setGeoState("error");
         }
-        setLoading(false);
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
     );
-
-    return () => navigator.geolocation.clearWatch(id);
   }, []);
 
-  return { location, error, loading };
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  return {
+    location,
+    error,
+    geoState,
+    loading: geoState === "idle" || geoState === "loading",
+    refresh,
+  };
 }

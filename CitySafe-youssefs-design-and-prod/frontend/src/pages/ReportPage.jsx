@@ -6,6 +6,9 @@ import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 import { useOfflineQueue } from "../hooks/useOfflineQueue";
 import { useGeolocation } from "../hooks/useGeolocation";
+import { reportsService } from "../services/reportsService";
+import { resolveApiUrl } from "../lib/apiClient";
+import toast from "react-hot-toast";
 
 const REPORT_TYPES = [
   { id: "pothole", label: "Pothole", emoji: "🕳️" },
@@ -27,7 +30,8 @@ export default function ReportPage() {
 
   const [type, setType] = useState("");
   const [description, setDescription] = useState("");
-  const [imageRef, setImageRef] = useState("");
+  const [imageFile, setImageFile] = useState(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
   const [submitted, setSubmitted] = useState(null);
   const [errors, setErrors] = useState({});
 
@@ -36,6 +40,7 @@ export default function ReportPage() {
   const validate = () => {
     const e = {};
     if (!type) e.type = "Please select a report type.";
+    if (!location) e.location = geoError ?? "A valid location is required before submitting a report.";
     const minChars = EMERGENCY_TYPES.includes(type) ? 0 : 3;
     if (description.trim().length < minChars)
       e.description = `Please enter at least ${minChars} characters.`;
@@ -48,7 +53,22 @@ export default function ReportPage() {
     if (Object.keys(errs).length) { setErrors(errs); return; }
     setErrors({});
 
-    const payload = { type, description, imageRef: imageRef || null, location };
+    let imageUrl = null;
+
+    if (imageFile) {
+      setUploadingImage(true);
+      try {
+        const uploadResponse = await reportsService.uploadImage(imageFile);
+        imageUrl = uploadResponse.data?.imageUrl ?? uploadResponse.imageUrl ?? null;
+      } catch (error) {
+        setUploadingImage(false);
+        toast.error(error.message ?? "Failed to upload image");
+        return;
+      }
+      setUploadingImage(false);
+    }
+
+    const payload = { type, description, imageUrl, location };
 
     // Offline-first: queue the report if we have no connectivity
     const queued = await submitOrQueue("report", payload);
@@ -61,6 +81,7 @@ export default function ReportPage() {
   };
 
   if (submitted) {
+    const submittedImageUrl = resolveApiUrl(submitted.imageUrl);
     const handleRetract = () => {
       if (!window.confirm("Are you sure you want to retract this report? This cannot be undone.")) return;
       cancelReport(submitted.id, {
@@ -68,7 +89,7 @@ export default function ReportPage() {
           setSubmitted(null);
           setType("");
           setDescription("");
-          setImageRef("");
+          setImageFile(null);
         },
       });
     };
@@ -90,6 +111,13 @@ export default function ReportPage() {
               </div>
               <div className="font-semibold text-slate-800 capitalize">{submitted.type}</div>
               <div className="text-sm text-slate-500 mt-1">{submitted.description}</div>
+              {submittedImageUrl && (
+                <img
+                  src={submittedImageUrl}
+                  alt="Submitted report"
+                  className="mt-3 h-40 w-full rounded-xl object-cover border border-slate-200"
+                />
+              )}
               <div className="text-xs text-slate-400 mt-2">
                 Status: <span className="font-medium text-teal-600 capitalize">{submitted.status}</span>
               </div>
@@ -101,7 +129,7 @@ export default function ReportPage() {
             </Button>
             <Button
               variant="ghost" className="w-full"
-              onClick={() => { setSubmitted(null); setType(""); setDescription(""); setImageRef(""); }}
+              onClick={() => { setSubmitted(null); setType(""); setDescription(""); setImageFile(null); }}
             >
               Report another issue
             </Button>
@@ -186,6 +214,9 @@ export default function ReportPage() {
               </div>
             </div>
           )}
+          {errors.location && (
+            <p className="text-xs text-red-500 mt-1.5" role="alert">{errors.location}</p>
+          )}
         </div>
 
         {/* ── Description ── */}
@@ -210,30 +241,34 @@ export default function ReportPage() {
           )}
         </div>
 
-        {/* ── Image ref ── */}
+        {/* ── Image upload ── */}
         <div>
           <label className="block text-sm font-semibold text-slate-700 mb-2" htmlFor="report-image">
-            Photo reference <span className="text-slate-400 font-normal">(optional)</span>
+            Upload photo <span className="text-slate-400 font-normal">(optional)</span>
           </label>
           <div className="flex items-center gap-2.5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
             <Camera className="h-4 w-4 text-slate-400 shrink-0" aria-hidden="true" />
             <input
               id="report-image"
-              type="text"
-              value={imageRef}
-              onChange={(e) => setImageRef(e.target.value)}
-              placeholder="Paste an image URL…"
-              className="bg-transparent flex-1 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none"
+              type="file"
+              accept="image/*"
+              onChange={(e) => setImageFile(e.target.files?.[0] ?? null)}
+              className="bg-transparent flex-1 text-sm text-slate-700 file:mr-3 file:rounded-xl file:border-0 file:bg-teal-50 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-teal-700"
             />
           </div>
+          {imageFile && (
+            <p className="mt-1.5 text-xs text-slate-500">
+              Selected: {imageFile.name}
+            </p>
+          )}
         </div>
 
         <Button
           type="submit"
           className="w-full"
           size="lg"
-          loading={isPending}
-          disabled={isPending}
+          loading={isPending || uploadingImage}
+          disabled={isPending || uploadingImage || geoLoading || !location}
         >
           {isPending ? "Submitting…" : "Submit Report"}
         </Button>

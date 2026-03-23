@@ -16,4 +16,7 @@ export const sosService = {
     // Owner: cancel a pending SOS request
     cancel: (id) =>
         client.patch(`/sos/${id}/status`, { status: "cancelled" }),
+
+    resolve: (id) =>
+        client.patch(`/sos/${id}/resolve`, {}),
 };

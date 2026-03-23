@@ -36,6 +36,7 @@ import { awardPoints, getPointsLeaderboard, getUserLedger } from "./features/poi
 import { getVouchers, redeemVoucher } from "./features/vouchers.js";
 import { getUserHistory } from "./features/history.js";
 import { getCrowdZones } from "./features/crowd.js";
+import { getAccessibilityResources } from "./features/accessibility.js";
 import { searchContent } from "./features/search.js";
 import { log } from "./utils.js";
 
@@ -65,6 +66,12 @@ const storage = multer.diskStorage({
     },
 });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5 MB cap
+
+// Fix 4: Ensure uploads directory exists at startup (prevents multer crash on fresh clone)
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+    log("info", "uploads.dir.created", { path: uploadDir });
+}
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cookieParser()); // Added
@@ -101,10 +108,21 @@ app.use(helmet({
             frameAncestors: ["'none'"],
         },
     },
+    // Allow uploaded images to be embedded by the frontend running on a
+    // different localhost origin (for example 5173 -> 4001).
+    crossOriginResourcePolicy: { policy: "cross-origin" },
 }));
 app.use(express.json({ limit: "2mb" })); // Kept limit
 app.use(express.urlencoded({ extended: true }));
-app.use("/uploads", express.static(uploadDir));
+app.use("/uploads", express.static(uploadDir, {
+    setHeaders: (res) => {
+        // Static uploads are rendered directly in <img> tags from the frontend.
+        // These headers prevent the browser from blocking the resource when the
+        // API and frontend run on different local origins.
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+    },
+}));
 
 // Structured request logging
 app.use((req, _res, next) => {
@@ -187,10 +205,218 @@ const ok = (res, data) => res.json({ success: true, data });
 // Helper for consistent error responses
 const unauthorized = (res, message = "Unauthorized") => res.status(401).json({ success: false, error: message });
 
+const communityResponders = new Map();
+
+const getCommunityResponderState = (requestId) => {
+    const state = communityResponders.get(requestId);
+    if (!state) {
+        return { responderId: null, responderCount: 0 };
+    }
+
+    const responderIds = Array.from(state.responderIds);
+    return {
+        responderId: responderIds[0] ?? null,
+        responderCount: responderIds.length,
+    };
+};
+
+const normalizeCommunitySosStatus = (dbStatus, responderCount) => {
+    if (responderCount > 0) return "in_progress";
+    if (dbStatus === "under_review") return "active";
+    return dbStatus;
+};
+
+const normalizeCommunityReportStatus = (dbStatus, responderCount) => {
+    if (responderCount > 0) return "in_progress";
+    return dbStatus;
+};
+
+const normalizeImageUrl = (value) => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+
+    // Accept only actual file/URL values so description-like text never ends up
+    // bound into image elements on the frontend.
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    if (trimmed.startsWith("/uploads/")) return trimmed;
+    return null;
+};
+
+const DEFAULT_SETTINGS = {
+    notifications: true,
+    reportStatusUpdates: true,
+    communityUpdates: false,
+    shareLocation: true,
+    anonymousReports: false,
+};
+
+const serializeSettings = (row = {}) => ({
+    notifications: row.notifications ?? DEFAULT_SETTINGS.notifications,
+    reportStatusUpdates: row.report_status_updates ?? DEFAULT_SETTINGS.reportStatusUpdates,
+    communityUpdates: row.community_updates ?? DEFAULT_SETTINGS.communityUpdates,
+    shareLocation: row.share_location ?? DEFAULT_SETTINGS.shareLocation,
+    anonymousReports: row.anonymous_reports ?? DEFAULT_SETTINGS.anonymousReports,
+});
+
+const normalizeUserProfile = (row) => ({
+    userId: row.id,
+    username: row.username,
+    name: row.name || row.username,
+    email: row.email ?? "",
+    role: row.role,
+    displayName: row.name || row.username,
+});
+
+const ensureUserSettingsRow = async (userId) => {
+    await query(`
+        INSERT INTO user_settings (
+            user_id,
+            notifications,
+            report_status_updates,
+            community_updates,
+            share_location,
+            anonymous_reports
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (user_id) DO NOTHING
+    `, [
+        userId,
+        DEFAULT_SETTINGS.notifications,
+        DEFAULT_SETTINGS.reportStatusUpdates,
+        DEFAULT_SETTINGS.communityUpdates,
+        DEFAULT_SETTINGS.shareLocation,
+        DEFAULT_SETTINGS.anonymousReports,
+    ]);
+};
+
+const getUserProfileWithSettings = async (userId) => {
+    await ensureUserSettingsRow(userId);
+
+    return query(`
+        SELECT
+            u.id,
+            u.username,
+            COALESCE(NULLIF(u.name, ''), u.username) AS name,
+            COALESCE(u.email, '') AS email,
+            u.role,
+            us.notifications,
+            us.report_status_updates,
+            us.community_updates,
+            us.share_location,
+            us.anonymous_reports
+        FROM users u
+        LEFT JOIN user_settings us ON us.user_id = u.id
+        WHERE u.id = $1
+    `, [userId]);
+};
+
+const loadCurrentUserOr404 = async (req, res) => {
+    const userRes = await getUserProfileWithSettings(req.user.userId);
+    if (!userRes.success) {
+        res.status(500).json({ error: `Failed to load user profile: ${userRes.error}` });
+        return null;
+    }
+
+    const row = userRes.data.rows[0];
+    if (!row) {
+        res.status(404).json({ error: "User not found." });
+        return null;
+    }
+
+    return row;
+};
+
+const upsertUserSettings = async (userId, body = {}) => {
+    await ensureUserSettingsRow(userId);
+    const currentSettingsRes = await query(`
+        SELECT notifications, report_status_updates, community_updates, share_location, anonymous_reports
+        FROM user_settings
+        WHERE user_id = $1
+    `, [userId]);
+
+    const currentSettings = serializeSettings(currentSettingsRes.success ? currentSettingsRes.data.rows[0] : undefined);
+    const nextSettings = {
+        notifications: body.notifications ?? currentSettings.notifications,
+        reportStatusUpdates: body.reportStatusUpdates ?? currentSettings.reportStatusUpdates,
+        communityUpdates: body.communityUpdates ?? currentSettings.communityUpdates,
+        shareLocation: body.shareLocation ?? currentSettings.shareLocation,
+        anonymousReports: body.anonymousReports ?? currentSettings.anonymousReports,
+    };
+
+    const updateRes = await query(`
+        INSERT INTO user_settings (
+            user_id,
+            notifications,
+            report_status_updates,
+            community_updates,
+            share_location,
+            anonymous_reports,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        ON CONFLICT (user_id) DO UPDATE SET
+            notifications = EXCLUDED.notifications,
+            report_status_updates = EXCLUDED.report_status_updates,
+            community_updates = EXCLUDED.community_updates,
+            share_location = EXCLUDED.share_location,
+            anonymous_reports = EXCLUDED.anonymous_reports,
+            updated_at = NOW()
+        RETURNING notifications, report_status_updates, community_updates, share_location, anonymous_reports
+    `, [
+        userId,
+        !!nextSettings.notifications,
+        !!nextSettings.reportStatusUpdates,
+        !!nextSettings.communityUpdates,
+        !!nextSettings.shareLocation,
+        !!nextSettings.anonymousReports,
+    ]);
+
+    return {
+        nextSettings,
+        updateRes,
+    };
+};
+
+const ensureRuntimeSchema = async () => {
+    const statements = [
+        `ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(255)`,
+        `ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)`,
+        `ALTER TABLE reports ADD COLUMN IF NOT EXISTS image_url TEXT`,
+        `ALTER TABLE sos_requests ADD COLUMN IF NOT EXISTS image_url TEXT`,
+        `CREATE TABLE IF NOT EXISTS user_settings (
+            user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            notifications BOOLEAN DEFAULT true,
+            report_status_updates BOOLEAN DEFAULT true,
+            community_updates BOOLEAN DEFAULT false,
+            share_location BOOLEAN DEFAULT true,
+            anonymous_reports BOOLEAN DEFAULT false,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )`,
+        `CREATE TABLE IF NOT EXISTS ratings (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            report_id UUID REFERENCES reports(id) ON DELETE CASCADE,
+            user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+            rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            UNIQUE (report_id, user_id)
+        )`,
+        `CREATE INDEX IF NOT EXISTS ratings_report_id_idx ON ratings (report_id)`,
+        `UPDATE users SET name = COALESCE(NULLIF(name, ''), username) WHERE name IS NULL OR name = ''`,
+        `UPDATE reports SET image_url = image_ref WHERE image_url IS NULL AND image_ref IS NOT NULL`,
+    ];
+
+    for (const sql of statements) {
+        const result = await query(sql);
+        if (!result.success) {
+            throw new Error(result.error);
+        }
+    }
+};
+
 
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 app.post("/api/auth/register", authLimiter, async (req, res) => {
-    const { userId, password, displayName } = req.body;
+    const { userId, password, displayName, email = null } = req.body;
     if (!userId || !password) return res.status(400).json({ error: "Missing credentials" });
     if (userId.length < 3) return res.status(400).json({ error: "Username must be at least 3 characters." });
     if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters." });
@@ -202,17 +428,21 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
     const insertRes = await query(
-        `INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'member') RETURNING id, role`,
-        [userId, hash]
+        `INSERT INTO users (username, name, email, password_hash, role)
+         VALUES ($1, $2, $3, $4, 'member')
+         RETURNING id, username, name, email, role`,
+        [userId, displayName ?? userId, email, hash]
     );
 
     if (!insertRes.success) return res.status(500).json({ error: "Registration failed." });
 
-    const newUid = insertRes.data.rows[0].id;
-    const role = insertRes.data.rows[0].role;
+    const insertedUser = insertRes.data.rows[0];
+    const newUid = insertedUser.id;
+    const role = insertedUser.role;
 
     // Award sign up points using the Postgres function
     await query(`SELECT award_points($1, $2, $3)`, [newUid, 50, "Welcome to CitySafe"]);
+    await ensureUserSettingsRow(newUid);
 
     const token = jwt.sign({ userId: newUid, role }, JWT_SECRET, { expiresIn: "24h" });
     log("info", "auth.register", { userId });
@@ -223,14 +453,23 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
         sameSite: 'lax',
         maxAge: 24 * 60 * 60 * 1000
     });
-    return res.status(201).json({ userId: newUid, role, displayName: displayName ?? userId });
+    return res.status(201).json({
+        userId: newUid,
+        role,
+        name: insertedUser.name || insertedUser.username,
+        email: insertedUser.email ?? "",
+        displayName: insertedUser.name || insertedUser.username,
+    });
 });
 
 app.post("/api/auth/login", authLimiter, async (req, res) => {
     const { userId, password } = req.body;
     if (!userId || !password) return res.status(400).json({ error: "Missing credentials" });
 
-    const searchRes = await query(`SELECT id, username, password_hash, role FROM users WHERE username = $1`, [userId]);
+    const searchRes = await query(
+        `SELECT id, username, name, email, password_hash, role FROM users WHERE username = $1`,
+        [userId]
+    );
     if (!searchRes.success || searchRes.data?.rows?.length === 0) {
         await bcrypt.compare(password, "$2b$10$XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX");
         return res.status(401).json({ error: "Invalid credentials." });
@@ -249,21 +488,67 @@ app.post("/api/auth/login", authLimiter, async (req, res) => {
         sameSite: 'lax',
         maxAge: 24 * 60 * 60 * 1000
     });
-    return res.json({ userId: user.id, role: user.role, displayName: user.username });
+    await ensureUserSettingsRow(user.id);
+    return res.json({
+        userId: user.id,
+        role: user.role,
+        name: user.name || user.username,
+        email: user.email ?? "",
+        displayName: user.name || user.username,
+    });
 });
 
 app.get("/api/auth/me", requireAuth, async (req, res) => {
-    const userRes = await query(`SELECT username FROM users WHERE id = $1`, [req.user.userId]);
-    if (!userRes.success || userRes.data?.rows?.length === 0) {
-        return res.status(404).json({ error: "User not found." });
-    }
-    const displayName = userRes.data.rows[0].username;
-    return res.json({ userId: req.user.userId, role: req.user.role, displayName });
+    const row = await loadCurrentUserOr404(req, res);
+    if (!row) return;
+    return res.json({
+        ...normalizeUserProfile(row),
+        settings: serializeSettings(row),
+    });
 });
 
 app.post("/api/auth/logout", (req, res) => {
     res.clearCookie('cs_token');
     return res.json({ success: true, message: "Logged out" });
+});
+
+app.get("/api/user/me", requireAuth, async (req, res) => {
+    const row = await loadCurrentUserOr404(req, res);
+    if (!row) return;
+
+    return res.json({
+        ...normalizeUserProfile(row),
+        settings: serializeSettings(row),
+    });
+});
+
+app.get("/api/user/settings", requireAuth, async (req, res) => {
+    const row = await loadCurrentUserOr404(req, res);
+    if (!row) return;
+    return res.json(serializeSettings(row));
+});
+
+app.put("/api/user/settings", requireAuth, async (req, res) => {
+    const { nextSettings, updateRes } = await upsertUserSettings(req.user.userId, req.body);
+
+    if (!updateRes.success) {
+        return res.status(500).json({ error: `Failed to update settings: ${updateRes.error}` });
+    }
+
+    log("info", "user.settings_updated", { userId: req.user.userId, settings: nextSettings });
+    return res.json(serializeSettings(updateRes.data.rows[0]));
+});
+
+app.post("/api/upload", requireAuth, upload.single("image"), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: "An image file is required." });
+    }
+
+    // Return a relative upload path; the frontend expands this against the
+    // backend origin before rendering.
+    return res.status(201).json({
+        imageUrl: `/uploads/${req.file.filename}`,
+    });
 });
 
 // ─── Reports Routes ───────────────────────────────────────────────────────────
@@ -278,12 +563,13 @@ app.get("/api/reports", requireAuth, async (req, res) => {
 
 app.post("/api/reports", requireAuth, upload.single("image"), async (req, res) => {
     const body = req.body;
-    const imageRef = req.file ? `/uploads/${req.file.filename}` : (body.imageRef ?? null);
+    const imageUrl = normalizeImageUrl(req.file ? `/uploads/${req.file.filename}` : (body.imageUrl ?? body.imageRef ?? null));
     const result = await createReport(req.user.userId, {
         location: body.location ? (typeof body.location === "string" ? JSON.parse(body.location) : body.location) : null,
         type: body.type,
         description: body.description,
-        imageRef,
+        imageRef: imageUrl,
+        imageUrl,
     });
     const io = req.app.get("io");
     if (result.success) io.emit("report:new", result.data);
@@ -291,9 +577,29 @@ app.post("/api/reports", requireAuth, upload.single("image"), async (req, res) =
 });
 
 app.get("/api/reports/:id", requireAuth, async (req, res) => {
-    const q = await query(`SELECT * FROM reports WHERE id = $1`, [req.params.id]);
+    const q = await query(`
+        SELECT
+            id,
+            author_id AS "authorId",
+            type,
+            description,
+            image_ref AS "imageRef",
+            COALESCE(image_url, image_ref) AS "imageUrl",
+            status,
+            created_at AS "createdAt",
+            ST_X(location::geometry) AS lon,
+            ST_Y(location::geometry) AS lat
+        FROM reports
+        WHERE id = $1
+    `, [req.params.id]);
     if (!q.success || q.data.rows.length === 0) return res.status(404).json({ error: "Report not found." });
-    return res.json(q.data.rows[0]);
+    const report = q.data.rows[0];
+    return res.json({
+        ...report,
+        imageRef: normalizeImageUrl(report.imageRef),
+        imageUrl: normalizeImageUrl(report.imageUrl),
+        location: { lat: Number(report.lat), lon: Number(report.lon) },
+    });
 });
 
 app.patch("/api/reports/:id/status", requireAuth, requireAdmin, async (req, res) => {
@@ -318,8 +624,123 @@ app.delete("/api/reports/:id/cancel", requireAuth, async (req, res) => {
     return send(res, result);
 });
 
-app.get("/api/users/:id/reports", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const result = getReportsByUser(req.params.id, req.query.status ?? null);
+app.patch("/api/reports/:id/resolve", requireAuth, async (req, res) => {
+    const reportRes = await query(`
+        SELECT
+            id,
+            author_id,
+            status,
+            COALESCE(image_url, image_ref) AS "imageUrl",
+            description,
+            type,
+            created_at AS "createdAt",
+            ST_X(location::geometry) AS lon,
+            ST_Y(location::geometry) AS lat
+        FROM reports
+        WHERE id = $1
+    `, [req.params.id]);
+
+    if (!reportRes.success) {
+        return res.status(500).json({ error: `Failed to load report: ${reportRes.error}` });
+    }
+
+    const report = reportRes.data.rows[0];
+    if (!report) {
+        return res.status(404).json({ error: "Report not found." });
+    }
+    if (req.user.role !== "admin" && report.author_id !== req.user.userId) {
+        return res.status(403).json({ error: "Only the report owner can resolve this report." });
+    }
+
+    const updateRes = await query(
+        `UPDATE reports SET status = 'resolved' WHERE id = $1 RETURNING id, status`,
+        [req.params.id]
+    );
+    if (!updateRes.success) {
+        return res.status(500).json({ error: `Failed to resolve report: ${updateRes.error}` });
+    }
+
+    const responderState = getCommunityResponderState(req.params.id);
+    req.app.get("io").emit("report:resolved", { id: req.params.id, status: "resolved" });
+    return res.json({
+        id: req.params.id,
+        status: "resolved",
+        responderId: responderState.responderId,
+        responderCount: responderState.responderCount,
+    });
+});
+
+app.delete("/api/reports/:id", requireAuth, async (req, res) => {
+    const reportRes = await query(`SELECT id, author_id FROM reports WHERE id = $1`, [req.params.id]);
+    if (!reportRes.success) {
+        return res.status(500).json({ error: `Failed to load report: ${reportRes.error}` });
+    }
+
+    const report = reportRes.data.rows[0];
+    if (!report) {
+        return res.status(404).json({ error: "Report not found." });
+    }
+    if (req.user.role !== "admin" && report.author_id !== req.user.userId) {
+        return res.status(403).json({ error: "Only the report owner can delete this report." });
+    }
+
+    const deleteRes = await query(`DELETE FROM reports WHERE id = $1`, [req.params.id]);
+    if (!deleteRes.success) {
+        return res.status(500).json({ error: `Failed to delete report: ${deleteRes.error}` });
+    }
+
+    communityResponders.delete(req.params.id);
+    req.app.get("io").emit("report:deleted", { id: req.params.id });
+    return res.json({ success: true, id: req.params.id });
+});
+
+app.post("/api/ratings", requireAuth, async (req, res) => {
+    const { reportId, rating } = req.body ?? {};
+    const normalizedRating = Number(rating);
+
+    if (!reportId || !Number.isInteger(normalizedRating) || normalizedRating < 1 || normalizedRating > 5) {
+        return res.status(400).json({ error: "reportId and rating (1-5) are required." });
+    }
+
+    const reportRes = await query(`SELECT id, author_id, status FROM reports WHERE id = $1`, [reportId]);
+    if (!reportRes.success) {
+        return res.status(500).json({ error: `Failed to load report: ${reportRes.error}` });
+    }
+
+    const report = reportRes.data.rows[0];
+    if (!report) {
+        return res.status(404).json({ error: "Report not found." });
+    }
+    if (req.user.role !== "admin" && report.author_id !== req.user.userId) {
+        return res.status(403).json({ error: "Only the report owner can rate a responder." });
+    }
+    if (report.status !== "resolved") {
+        return res.status(400).json({ error: "The report must be resolved before it can be rated." });
+    }
+
+    const responderState = getCommunityResponderState(reportId);
+    if (!responderState.responderId) {
+        return res.status(400).json({ error: "No responder is recorded for this report yet." });
+    }
+
+    const ratingRes = await query(`
+        INSERT INTO ratings (report_id, user_id, rating)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (report_id, user_id) DO UPDATE SET
+            rating = EXCLUDED.rating,
+            created_at = NOW()
+        RETURNING id, report_id AS "reportId", user_id AS "userId", rating, created_at AS "createdAt"
+    `, [reportId, responderState.responderId, normalizedRating]);
+
+    if (!ratingRes.success) {
+        return res.status(500).json({ error: `Failed to save rating: ${ratingRes.error}` });
+    }
+
+    return res.status(201).json(ratingRes.data.rows[0]);
+});
+
+app.get("/api/users/:id/reports", requireAuth, requireOwnerOrAdmin((req) => req.params.id), async (req, res) => {
+    const result = await getReportsByUser(req.params.id, parseInt(req.query.page || "1", 10));
     return send(res, result);
 });
 
@@ -362,14 +783,31 @@ app.post("/api/sos", requireAuth, sosLimiter, async (req, res) => {
 });
 
 app.get("/api/sos/:id", requireAuth, async (req, res) => {
-    const q = await query(`SELECT * FROM sos_requests WHERE id = $1`, [req.params.id]);
+    const q = await query(`
+        SELECT
+            id,
+            requester_id,
+            type,
+            urgency,
+            description,
+            image_url AS "imageUrl",
+            status,
+            created_at AS "createdAt",
+            ST_X(location::geometry) AS lon,
+            ST_Y(location::geometry) AS lat
+        FROM sos_requests
+        WHERE id = $1
+    `, [req.params.id]);
     if (!q.success || q.data.rows.length === 0) return res.status(404).json({ error: "SOS not found." });
 
     const sos = q.data.rows[0];
     if (req.user.role !== "admin" && sos.requester_id !== req.user.userId) {
         return res.status(403).json({ error: "Forbidden." });
     }
-    return res.json(sos);
+    return res.json({
+        ...sos,
+        location: { lat: Number(sos.lat), lon: Number(sos.lon) },
+    });
 });
 
 app.patch("/api/sos/:id/status", requireAuth, async (req, res) => {
@@ -391,6 +829,25 @@ app.patch("/api/sos/:id/status", requireAuth, async (req, res) => {
 
 app.get("/api/users/:id/sos", requireAuth, requireOwnerOrAdmin((req) => req.params.id), async (req, res) => {
     const result = await getSosRequestsByUser(req.params.id, parseInt(req.query.page || "1"));
+    return send(res, result);
+});
+
+app.patch("/api/sos/:id/resolve", requireAuth, async (req, res) => {
+    const q = await query(`SELECT id, requester_id FROM sos_requests WHERE id = $1`, [req.params.id]);
+    if (!q.success) {
+        return res.status(500).json({ error: `Failed to load SOS request: ${q.error}` });
+    }
+
+    const sos = q.data.rows[0];
+    if (!sos) {
+        return res.status(404).json({ error: "SOS not found." });
+    }
+    if (req.user.role !== "admin" && sos.requester_id !== req.user.userId) {
+        return res.status(403).json({ error: "Only the requester can resolve this SOS." });
+    }
+
+    const result = await updateSosStatus(req.params.id, "resolved");
+    if (result.success) req.app.get("io").emit("sos:updated", result.data);
     return send(res, result);
 });
 
@@ -442,14 +899,29 @@ app.get("/api/users/:id/history", requireAuth, requireOwnerOrAdmin((req) => req.
 });
 
 // ─── User Settings ────────────────────────────────────────────────────────────
-app.get("/api/users/:id/settings", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    return res.json({ anonymousReports: false, notifications: true });
+app.get("/api/users/:id/settings", requireAuth, requireOwnerOrAdmin((req) => req.params.id), async (req, res) => {
+    await ensureUserSettingsRow(req.params.id);
+    const settingsRes = await query(`
+        SELECT notifications, report_status_updates, community_updates, share_location, anonymous_reports
+        FROM user_settings
+        WHERE user_id = $1
+    `, [req.params.id]);
+
+    if (!settingsRes.success) {
+        return res.status(500).json({ error: `Failed to load settings: ${settingsRes.error}` });
+    }
+
+    return res.json(serializeSettings(settingsRes.data.rows[0]));
 });
 
-app.patch("/api/users/:id/settings", requireAuth, requireOwnerOrAdmin((req) => req.params.id), (req, res) => {
-    const updated = { anonymousReports: false, notifications: true, ...req.body };
-    log("info", "user.settings_updated", { userId: req.params.id, settings: updated });
-    return res.json(updated);
+app.patch("/api/users/:id/settings", requireAuth, requireOwnerOrAdmin((req) => req.params.id), async (req, res) => {
+    const { nextSettings, updateRes } = await upsertUserSettings(req.params.id, req.body);
+    if (!updateRes.success) {
+        return res.status(500).json({ error: `Failed to update settings: ${updateRes.error}` });
+    }
+
+    log("info", "user.settings_updated", { userId: req.params.id, settings: nextSettings });
+    return res.json(serializeSettings(updateRes.data.rows[0]));
 });
 
 // ─── Search Route ─────────────────────────────────────────────────────────────
@@ -468,8 +940,181 @@ app.get("/api/search", requireAuth, (req, res) => {
 
 // ─── Crowd Density Route ──────────────────────────────────────────────────────
 app.get("/api/crowd-density", requireAuth, async (req, res) => {
-    const result = await getCrowdZones();
+    const { lat, lon, radius = 12 } = req.query;
+    const result = await getCrowdZones(
+        lat !== undefined ? parseFloat(lat) : undefined,
+        lon !== undefined ? parseFloat(lon) : undefined,
+        parseFloat(radius)
+    );
     return send(res, result);
+});
+
+// ─── Accessibility Resources Route ───────────────────────────────────────────
+app.get("/api/accessibility/resources", requireAuth, async (req, res) => {
+    const { lat, lon, radius = 8 } = req.query;
+    const result = await getAccessibilityResources(
+        parseFloat(lat),
+        parseFloat(lon),
+        parseFloat(radius)
+    );
+    return send(res, result);
+});
+
+// ─── Community Feed ───────────────────────────────────────────────────────────
+app.get("/api/community/feed", requireAuth, async (_req, res) => {
+    const reportsResult = await query(`
+        SELECT
+            r.id,
+            r.type,
+            r.description,
+            COALESCE(r.image_url, r.image_ref) AS "imageUrl",
+            r.status,
+            ST_Y(r.location::geometry) AS lat,
+            ST_X(r.location::geometry) AS lon,
+            r.created_at AS "createdAt",
+            r.author_id AS "userId"
+        FROM reports r
+        WHERE r.status NOT IN ('resolved', 'cancelled')
+        ORDER BY r.created_at DESC
+    `);
+
+    if (!reportsResult.success) {
+        log("error", "community.feed.reports_query_failed", { error: reportsResult.error });
+        return res.status(500).json({ error: `Failed to load community reports: ${reportsResult.error}` });
+    }
+
+    const sosResult = await query(`
+        SELECT
+            s.id,
+            s.type,
+            s.urgency,
+            s.description,
+            s.image_url AS "imageUrl",
+            s.status,
+            ST_Y(s.location::geometry) AS lat,
+            ST_X(s.location::geometry) AS lon,
+            s.created_at AS "createdAt",
+            s.requester_id AS "userId"
+        FROM sos_requests s
+        WHERE s.status IN ('pending', 'under_review')
+        ORDER BY s.created_at DESC
+    `);
+
+    if (!sosResult.success) {
+        log("error", "community.feed.sos_query_failed", { error: sosResult.error });
+        return res.status(500).json({ error: `Failed to load SOS requests: ${sosResult.error}` });
+    }
+
+    const reports = reportsResult.data.rows.map((row) => {
+        const responderState = getCommunityResponderState(row.id);
+
+        return {
+            id: row.id,
+            _type: "report",
+            description: row.description,
+            type: row.type,
+            status: normalizeCommunityReportStatus(row.status, responderState.responderCount),
+            imageUrl: normalizeImageUrl(row.imageUrl),
+            location: { lat: Number(row.lat), lon: Number(row.lon) },
+            createdAt: row.createdAt,
+            userId: row.userId,
+            responderId: responderState.responderId,
+            responderCount: responderState.responderCount,
+        };
+    });
+
+    const sosRequests = sosResult.data.rows.map((row) => {
+        const responderState = getCommunityResponderState(row.id);
+
+        return {
+            id: row.id,
+            _type: "sos",
+            description: row.description,
+            type: row.type,
+            urgency: row.urgency,
+            status: normalizeCommunitySosStatus(row.status, responderState.responderCount),
+            imageUrl: normalizeImageUrl(row.imageUrl),
+            location: { lat: Number(row.lat), lon: Number(row.lon) },
+            createdAt: row.createdAt,
+            userId: row.userId,
+            responderId: responderState.responderId,
+            responderCount: responderState.responderCount,
+        };
+    });
+
+    const feed = [...sosRequests, ...reports].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    return res.json(feed);
+});
+
+app.post("/api/community/respond", requireAuth, async (req, res) => {
+    const { requestId, type } = req.body ?? {};
+
+    if (!requestId || !["sos", "report"].includes(type)) {
+        return res.status(400).json({ error: "requestId and a valid type are required." });
+    }
+
+    const table = type === "sos" ? "sos_requests" : "reports";
+    const allowedStatuses = type === "sos"
+        ? ["pending", "under_review"]
+        : ["under_review", "verified", "rejected"];
+
+    const lookupResult = await query(
+        `SELECT id, status FROM ${table} WHERE id = $1`,
+        [requestId]
+    );
+
+    if (!lookupResult.success) {
+        log("error", "community.respond.lookup_failed", { requestId, type, error: lookupResult.error });
+        return res.status(500).json({ error: `Failed to load ${type} request: ${lookupResult.error}` });
+    }
+
+    const item = lookupResult.data.rows[0];
+    if (!item) {
+        return res.status(404).json({ error: "Request not found." });
+    }
+
+    if (!allowedStatuses.includes(item.status)) {
+        return res.status(400).json({ error: "This request is no longer active." });
+    }
+
+    const existingState = communityResponders.get(requestId) ?? { responderIds: new Set() };
+    existingState.responderIds.add(req.user.userId);
+    communityResponders.set(requestId, existingState);
+
+    if (type === "sos" && item.status === "pending") {
+        const updateResult = await query(
+            `UPDATE sos_requests SET status = 'under_review' WHERE id = $1`,
+            [requestId]
+        );
+
+        if (!updateResult.success) {
+            log("error", "community.respond.sos_update_failed", { requestId, error: updateResult.error });
+            return res.status(500).json({ error: `Failed to update SOS request: ${updateResult.error}` });
+        }
+    }
+
+    const responderState = getCommunityResponderState(requestId);
+    req.app.get("io").emit("community:response", {
+        requestId,
+        type,
+        responderId: responderState.responderId,
+        responderCount: responderState.responderCount,
+    });
+
+    return res.json({
+        success: true,
+        message: "You are now responding to this request",
+        data: {
+            requestId,
+            type,
+            responderId: responderState.responderId,
+            responderCount: responderState.responderCount,
+            status: "in_progress",
+        },
+    });
 });
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
@@ -510,7 +1155,17 @@ io.on("connection", (socket) => {
 // Note: alert expiry is handled in PostgreSQL via expires_at column.
 // Seed users are provisioned directly via the database (init.sql).
 
-httpServer.listen(PORT, () => {
-    log("info", "server.started", { port: PORT, mode: process.env.NODE_ENV ?? "development" });
-    console.log(`\n🚀  CitySafe API running → http://localhost:${PORT}\n`);
-});
+const startServer = async () => {
+    try {
+        await ensureRuntimeSchema();
+        httpServer.listen(PORT, () => {
+            log("info", "server.started", { port: PORT, mode: process.env.NODE_ENV ?? "development" });
+            console.log(`\n🚀  CitySafe API running → http://localhost:${PORT}\n`);
+        });
+    } catch (error) {
+        log("error", "server.bootstrap_failed", { message: error.message });
+        process.exit(1);
+    }
+};
+
+startServer();
