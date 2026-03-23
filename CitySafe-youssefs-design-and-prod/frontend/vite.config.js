@@ -8,6 +8,11 @@ export default defineConfig({
     port: 8888,
     strictPort: true,
   },
+  test: {
+    environment: 'jsdom',
+    setupFiles: './src/test/setupTests.js',
+    globals: true,
+  },
   plugins: [
     react(),
     VitePWA({
@@ -31,7 +36,9 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         runtimeCaching: [
           {
-            urlPattern: /^http:\/\/localhost:4000\/api\/.*/,
+            // Support the configured local API ports used by this project during
+            // development so the PWA cache does not silently miss backend calls.
+            urlPattern: /^http:\/\/localhost:(4000|4001)\/api\/.*/,
             handler: 'NetworkFirst',
             options: {
               cacheName: 'citysafe-api-cache',

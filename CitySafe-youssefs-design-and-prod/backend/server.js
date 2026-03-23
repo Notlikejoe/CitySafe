@@ -420,6 +420,10 @@ app.post("/api/auth/register", authLimiter, async (req, res) => {
     if (!userId || !password) return res.status(400).json({ error: "Missing credentials" });
     if (userId.length < 3) return res.status(400).json({ error: "Username must be at least 3 characters." });
     if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters." });
+    if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+        // Keep backend validation aligned with the signup guidance shown in the UI.
+        return res.status(400).json({ error: "Password must contain at least one letter and one number." });
+    }
 
     const existing = await query(`SELECT id FROM users WHERE username = $1`, [userId]);
     if (existing.success && existing.data?.rows?.length > 0) {
@@ -1168,4 +1172,8 @@ const startServer = async () => {
     }
 };
 
-startServer();
+if (process.env.NODE_ENV !== "test") {
+    startServer();
+}
+
+export { app, httpServer, startServer };
