@@ -1,16 +1,70 @@
-# React + Vite
+# CitySafe — Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite SPA for the CitySafe community safety application.
 
-Currently, two official plugins are available:
+## Quick Start
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+```bash
+npm install
+cp .env.example .env   # configure VITE_API_URL and VITE_USE_MOCK
+npm run dev            # starts on http://localhost:8888 (or 5173 if forced)
+```
 
-## React Compiler
+To force port 5173:
+```bash
+npm run dev -- --port 5173
+```
 
-The React Compiler is currently not compatible with SWC. See [this issue](https://github.com/vitejs/vite-plugin-react/issues/428) for tracking the progress.
+## Environment Variables
 
-## Expanding the ESLint configuration
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `VITE_API_URL` | Backend base URL | `http://localhost:4001/api` |
+| `VITE_USE_MOCK` | Use in-memory mock API instead of real backend | `false` |
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Pages
+
+| Route | Page | Description |
+|-------|------|-------------|
+| `/` | `MapPage` | Live safety map (Hazards / Crowds / Heat / Accessibility lenses) |
+| `/report` | `ReportPage` | Submit a hazard report with image upload |
+| `/sos` | `SosPage` | Send an SOS request |
+| `/community` | `CommunityPage` ★ | Live feed of active SOS + hazard reports |
+| `/dashboard` | `DashboardPage` | Points, vouchers, and activity timeline |
+| `/settings` | `SettingsPage` | Notification and privacy preferences |
+
+## Testing
+
+```bash
+npm test          # run Vitest tests
+npm run build     # production build (also validates TypeScript / JSX)
+```
+
+Test files:
+- `src/pages/ReportPage.test.jsx`
+- `src/hooks/useSettings.test.jsx`
+- `src/test/setupTests.js` — global Vitest configuration
+
+## Key New Features (danielChanges)
+
+- **Community Page** — Live feed of SOS requests and hazard reports with respond/resolve flows
+- **Accessibility Map Lens** — Renders Overpass API resources (health, safety, accessible infra)
+- **Cookie-based Auth** — `apiClient` now uses `withCredentials: true`; no `localStorage` token handling
+- **Persisted Settings** — Settings are fetched from and written to the backend via `useSettings`
+- **useCommunity hook** — Auto-refreshes every 15 seconds for near-real-time feed updates
+
+## Architecture
+
+For full documentation, see `DEVELOPER_GUIDE.md` in the project root.
+
+```
+src/
+├── app/            # Layout shell + Leaflet fix
+├── components/     # Sidebar + reusable UI components
+├── contexts/       # AuthContext (cookie-based JWT)
+├── hooks/          # React Query data hooks (one per domain)
+├── lib/            # apiClient (Axios) + mockAdapter
+├── pages/          # One file per route
+├── services/       # Thin API wrappers (no state)
+└── test/           # Test setup
+```
