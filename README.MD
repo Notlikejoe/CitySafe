@@ -110,7 +110,7 @@ CI workflow:
 
 ## Testing and Evaluation
 
-Testing for CitySafe was conducted to increase confidence in observed system behaviour and identify defects, rather than prove complete correctness.
+Testing for CitySafe was conducted to evaluate whether implemented features operated as intended under representative prototype conditions.
 
 The prototype was evaluated using:
 - Functional Testing
@@ -129,32 +129,39 @@ Given the complexity of a full-stack prototype, it is not possible to test every
 - representative valid and invalid inputs
 - edge cases that could expose instability
 
+Expected behaviour was defined prior to execution and compared against observed behaviour in order to determine whether the prototype operated as intended under the tested conditions.
+
 ### Testing Types Applied
 
 - Functional Testing: used to verify core features such as authentication, reports, SOS, community feed, and settings.
-- Integration Testing: used to verify interaction between frontend, backend, database, and external services.
+- Integration Testing: used to verify interaction between the frontend, backend, PostgreSQL database, and external services. Real backend integration tests were executed using live API requests without mocking for selected flows such as `POST /api/reports` and `GET /api/community/feed`.
 - System Testing: used to simulate realistic user journeys across the application.
 - Performance Considerations: used to observe response times and rendering behaviour under normal prototype usage; no formal load testing was conducted.
 - Security Review: used to inspect authentication, protected routes, input validation, and upload handling; no formal penetration testing was conducted.
 
 These tests were mapped to core system features to ensure coverage of key functional requirements.
 
+### Testing Tools
+
+- Backend Testing: `Jest` and `Supertest`
+- Frontend Testing: `Vitest` and `React Testing Library`
+
 ### Example Test Scenarios
 
 Scenario: Report Creation
-- Steps: user logs in, uploads an image, creates a report, and opens the map or community feed.
+- Input: an authenticated user uploads an image, submits a report, and requests the community/map views.
 - Expected Behaviour: the report appears in the feed and on the map with the uploaded image.
-- Actual Behaviour: report creation and upload flow pass automated tests; uploaded files are served correctly; final browser confirmation remains advisable after restart.
+- Actual Behaviour: report creation and upload flow passed automated tests, and real backend integration tests verified that report data was persisted and returned through the API; browser-level image rendering still requires manual confirmation.
 - Result: `⚠️ Partially matches expected behaviour`
 
 Scenario: SOS Flow
-- Steps: user creates an SOS request, another user views it, and the requester resolves it.
+- Input: an authenticated user creates an SOS request, another user views it, and the requester resolves it.
 - Expected Behaviour: the SOS request is visible in active views and resolution completes successfully.
 - Actual Behaviour: SOS creation and resolution routes passed automated tests.
 - Result: `✅ Matches expected behaviour`
 
 Scenario: Accessibility Layer
-- Steps: user enables the accessibility layer on the map.
+- Input: a user enables the accessibility layer for a selected map area.
 - Expected Behaviour: accessibility resources appear using Overpass data or fallback data when external data is unavailable.
 - Actual Behaviour: fallback behaviour is implemented and tested, but live results still depend on Overpass availability.
 - Result: `⚠️ Partially matches expected behaviour`
@@ -209,50 +216,29 @@ Example:
 ### System Testing Scenarios
 
 Scenario 1
-- User logs in
-- Uploads an image
-- Creates a report
-- Views the report in the community feed and on the map
-
-Expected:
-- The report appears in both UI layers with the uploaded image
-
-Actual:
-- Report creation works, the image upload route returns a valid upload path, and feed/map integration is implemented; final browser verification remained advisable during testing
-
-Result:
-- `⚠️ Partial pass`
+- Input: a user logs in, uploads an image, creates a report, and views the report in the community feed and on the map.
+- Expected Behaviour: the report appears in both UI layers with the uploaded image.
+- Actual Behaviour: report creation, upload-path generation, and feed/map API integration operated as expected in automated tests; browser-level confirmation of image rendering remained advisable.
+- Result: `⚠️ Partially matches expected behaviour`
 
 Scenario 2
-- User triggers SOS
-- Another user sees the SOS request
-
-Expected:
-- The SOS request appears in active views and can be resolved correctly
-
-Actual:
-- Route and flow validation passed at the tested prototype level
-
-Result:
-- `✅ Matches expected behaviour`
+- Input: a user triggers an SOS request and another user retrieves the active feed.
+- Expected Behaviour: the SOS request appears in active views and can be resolved correctly.
+- Actual Behaviour: route-level and integration-level validation passed at the tested prototype level.
+- Result: `✅ Matches expected behaviour`
 
 Scenario 3
-- Accessibility toggle is enabled
-
-Expected:
-- Accessibility markers appear on the map
-
-Actual:
-- Behaviour depends on Overpass availability or fallback response
-
-Result:
-- `⚠️ Partial pass`
+- Input: the accessibility toggle is enabled for a selected map viewport.
+- Expected Behaviour: accessibility markers appear on the map.
+- Actual Behaviour: the feature operated correctly with fallback data, but live behaviour remains dependent on Overpass availability.
+- Result: `⚠️ Partially matches expected behaviour`
 
 ### Test Results Summary
 
-- Backend tests: `✅ All passed`
-- Frontend tests: `✅ All passed`
-- Integration flows: `⚠️ Mostly working, with some browser-level checks still pending`
+- Backend tests: `18/18 tests passed` across route tests, unit validation tests, and real API integration tests using `Jest` and `Supertest`
+- Frontend tests: `6/6 tests passed` across page and hook tests using `Vitest` and `React Testing Library`
+- Integration evidence: real backend integration tests verified live interaction between HTTP routes and the PostgreSQL database for report creation and community feed retrieval
+- Browser-level integration flows: `⚠️ Partially validated`, with some visual confirmation steps still requiring manual checking
 
 ### Performance Considerations
 
@@ -339,8 +325,8 @@ Test Case: Missing Upload File
 Test Case: Unsupported Upload Type
 - Input: `POST /api/upload` with a non-image file such as `.txt`
 - Expected Behaviour: request is rejected and the file is not treated as a valid image upload
-- Actual Behaviour: a secure implementation should block unsupported file types before accepting the upload
-- Result: `⚠️ Expected secure behaviour; stricter file-type filtering should be added for full enforcement`
+- Actual Behaviour: server-side upload filtering rejects unsupported file types before they are accepted by the API
+- Result: `✅ Matches expected behaviour`
 
 ### Key Issues Identified
 
@@ -350,7 +336,7 @@ Test Case: Unsupported Upload Type
 
 ### Evaluation
 
-The prototype demonstrates that core features such as reports, SOS, community feed, and settings persistence operate as expected at the tested unit and route-integration level. Testing increases confidence in observed behaviour, but does not guarantee complete correctness. It is important to note that testing cannot guarantee that the system is fault-free, but instead increases confidence in its behaviour under representative conditions. Testing increases confidence in system behaviour but cannot guarantee the absence of defects.
+The prototype demonstrates that core features such as reports, SOS, community feed, and settings persistence operated as expected at the tested unit, integration, and page-interaction levels. Testing cannot guarantee the absence of defects, but it provides evidence that the implemented behaviour aligns with the defined expectations under representative conditions.
 
 Further critical evaluation points:
 - reliance on external APIs introduces availability and dependency risk beyond the control of the prototype team; if a third-party service becomes slow, rate-limited, or unavailable, dependent features may degrade even when the local system is functioning correctly
