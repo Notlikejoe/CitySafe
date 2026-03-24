@@ -1,9 +1,0 @@
-[dotenv@17.3.1] injecting env (3) from .env -- tip: ⚡️ secrets for agents: https://dotenvx.com/as2
-[dotenv@17.3.1] injecting env (0) from .env -- tip: ⚙️  override existing env vars with { override: true }
-{"ts":"2026-03-22T16:03:06.931Z","level":"info","event":"server.started","port":"4005","mode":"development"}
-
-🚀  CitySafe API running → http://localhost:4005
-
-{"ts":"2026-03-22T16:03:08.020Z","level":"info","event":"http.request","method":"POST","url":"/api/auth/login","ip":"::1"}
-{"ts":"2026-03-22T16:03:08.932Z","level":"info","event":"auth.login","userId":"audit_test","role":"member"}
-{"ts":"2026-03-22T16:03:08.997Z","level":"info","event":"http.request","method":"GET","url":"/api/users/80085fd4-110e-4ad3-9313-1034f782216f/settings","ip":"::1"}
