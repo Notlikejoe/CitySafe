@@ -127,7 +127,7 @@ export default function SearchPage() {
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["search", q],
-    queryFn: () => apiClient.get("/search", { params: { q } }).then((r) => r.data ?? r),
+    queryFn: () => apiClient.get("/search", { q }).then((r) => r.data ?? r),
     enabled: q.length >= 2,
     staleTime: 30_000,
   });
