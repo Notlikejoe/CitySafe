@@ -22,3 +22,20 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Env files
+.env
+.env.*
+
+# Runtime uploads
+backend/uploads/
+
+# Local text/log artifacts
+backend/out.txt
+backend/error.txt
+backend/backend_log.txt
+frontend/frontend_log.txt
+frontend/vite_log.txt
+
+# Local backups
+CitySafe_Backup.zip
